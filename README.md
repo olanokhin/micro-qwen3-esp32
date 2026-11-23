@@ -2,7 +2,7 @@
 
 A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **60 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
 
-The model follows the Qwen3 architecture block by block and is trained from scratch on TinyStories. Its weights take **0.68 MB** (676,934 bytes) in a 4-bit format designed for the chip. Inference is a single dependency-free C file, and the same file runs on a computer for testing.
+The model follows the Qwen3 architecture block by block and is trained from scratch on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories). Its weights take **0.68 MB** (676,934 bytes) in a 4-bit format designed for the chip. Inference is a single dependency-free C file, and the same file runs on a computer for testing.
 
 To watch the same model work step by step in your browser, open [TensorLupa](https://tensorlupa.com). You can see the words it weighs, where its attention looks, and what flows through each layer.
 
@@ -140,7 +140,7 @@ Below 4 bits quality drops in a step, and int2 and ternary hit the same floor th
 
 ## How the demo model was made
 
-Two training runs on a MacBook (M3 Pro) with MLX: TinyStories V2 from scratch, then TinyStoriesInstruct on top. The recipes are in `training/recipes/`, and the logs and evaluations are in `logs/`.
+Two training runs on a MacBook (M3 Pro) with MLX: [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories) V2 from scratch, then [TinyStoriesInstruct](https://huggingface.co/datasets/roneneldan/TinyStoriesInstruct) on top. The recipes are in `training/recipes/`, and the logs and evaluations are in `logs/`.
 
 1. **Base model `ts2-base`.** Trained from scratch on TinyStories V2 (stories written by GPT-4), 500 MB of text, bf16, AdamW, learning rate 3e-3 with cosine decay.
 2. **Instruction tuning `tsim900-sft-x`.** Further training on 900K dialogues from TinyStoriesInstruct converted to the Qwen chat format. The loss counts only the answer. This run trains on 600 MB of text with learning rate 1e-3, and quantization-aware training (QAT) for the 4-bit format runs from the start, so the model learns with the weights it will have on the chip.
@@ -161,7 +161,7 @@ The export reproduces `models/tsim900-sft-x-w4r.bin` byte for byte from the trai
 
 ### Stories with requested words
 
-Instruction tuning alone gets all three requested words into the story only 64% of the time. The model "wants" the words: their logits are high at every step, but rarely high enough to win. A small decoding rule closes the gap:
+With instruction tuning alone, only 64% of the requested words make it into the story. The model "wants" the words: their logits are high at every step, but rarely high enough to win. A small decoding rule closes the gap:
 
 ```
 bias = base · (u + 1) · (1 + t / τ)        base 2, τ 100, temperature 0.6
@@ -169,7 +169,7 @@ bias = base · (u + 1) · (1 + t / τ)        base 2, τ 100, temperature 0.6
   t: tokens since the last requested word appeared (the longer it waits, the stronger the push)
 ```
 
-With this rule, all three words appear in 100% of 200 test orders. A small spelling automaton (FSM) finishes multi-token words correctly once they start, and only allows the endings English spelling allows (daring, stopped, invitations). The same rules run on the board.
+With this rule, all three words appeared in every one of the 200 test orders it was tuned on, and in 298 of 300 stories from orders the model had never seen, with the board's settings. A small spelling automaton (FSM) finishes multi-token words correctly once they start, and only allows the endings English spelling allows (daring, stopped, invitations). The same rules run on the board.
 
 Sampling uses top-k 40 and **min-p 0.02**: a token 50 or more times less likely than the favourite is never drawn. Such rare draws are how invented words begin. With the board's settings (4-bit weights, a simple repetition penalty), the cut lowers the share of stories with an invented word from 4.0% to 0.7% of 300 stories on orders the model had never seen; looping stories go from 4% to 6%. The board keeps the simple penalty because it needs no table; the [TensorLupa](https://tensorlupa.com) studio uses one that knows which repeats are natural in children's stories.
 
@@ -239,6 +239,6 @@ Grouped int4 and the Hadamard rotation were also tried, see [How the 4-bit weigh
 
 ## License
 
-Apache 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The training data, TinyStories and TinyStoriesInstruct by Eldan and Li (2023), is released under CDLA-Sharing-1.0.
+Apache 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The model was trained on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories), released under CDLA-Sharing-1.0, and on [TinyStoriesInstruct](https://huggingface.co/datasets/roneneldan/TinyStoriesInstruct) by the same authors, Eldan and Li (2023); the TinyStoriesInstruct page states no license.
 
 Made by [Alex Anokhin](https://github.com/olanokhin).

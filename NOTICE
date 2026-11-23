@@ -5,4 +5,7 @@ This product includes software developed by Alex Anokhin (https://github.com/ola
 
 The model architecture follows Qwen3 (Qwen Team, Alibaba Cloud). This project is not affiliated
 with Qwen or Alibaba Cloud; the weights are trained from scratch on TinyStories and TinyStoriesInstruct
-(Eldan and Li, 2023, released under CDLA-Sharing-1.0).
+(Eldan and Li, 2023). TinyStories is released under CDLA-Sharing-1.0; the TinyStoriesInstruct page
+states no license.
+https://huggingface.co/datasets/roneneldan/TinyStories
+https://huggingface.co/datasets/roneneldan/TinyStoriesInstruct
