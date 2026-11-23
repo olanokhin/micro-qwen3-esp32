@@ -21,7 +21,18 @@ To watch the same model work step by step in your browser, open [TensorLupa](htt
 
 ## Flash a board
 
-You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8) and ESP-IDF 5.3.
+You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8).
+
+**From the browser.** Open [tensorlupa.com/flash](https://tensorlupa.com/flash) in Chrome or Edge on a computer, plug the board in and press one button. The page walks you through every step.
+
+**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.0.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
+
+```bash
+pip install esptool
+esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.0.bin
+```
+
+**From source,** with ESP-IDF 5.3:
 
 ```bash
 cd firmware
@@ -30,8 +41,6 @@ idf.py -p PORT flash
 # the model goes into its own partition
 esptool.py --port PORT --chip esp32s3 --after no_reset write_flash 0x210000 ../models/tsim900-sft-x-w4r.bin
 ```
-
-Ready-made firmware and model files are attached to each [release](../../releases).
 
 **Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story token by token and shows the speed. You can set the temperature and top-k, or order a story with up to three words. Up to four guests can queue at once. The serial console works too.
 
