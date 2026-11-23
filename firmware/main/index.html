@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>micro-qwen3</title>
+<style>
+/* The board as a studio: solder mask and copper traces. One column, the story comes first. */
+:root {
+  --bg: #e9efed; --panel: #fbfcfc; --ink: #132022; --muted: #5a6a6c; --line: #d3dcda;
+  --copper: #a8561f; --copper-soft: #f2e2d5; --good: #2f7a4f;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1615; --panel: #152120; --ink: #e2ebe8; --muted: #8fa29f; --line: #263533;
+    --copper: #e3925a; --copper-soft: #3a2a1f; --good: #5fbf86; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1615; --panel: #152120; --ink: #e2ebe8; --muted: #8fa29f; --line: #263533;
+  --copper: #e3925a; --copper-soft: #3a2a1f; --good: #5fbf86; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 var(--sans); }
+.wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+h1 { margin: 0; font: 600 22px/1.2 var(--mono); letter-spacing: -0.02em; }
+h1 span { color: var(--copper); }
+.chip { font: 12px/1.4 var(--mono); color: var(--muted); }
+.story { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 18px 14px;
+  min-height: 220px; font: 18px/1.65 var(--serif); white-space: pre-wrap; overflow-wrap: anywhere; }
+.story .prompt { color: var(--copper); }
+.story .empty { color: var(--muted); font: italic 16px/1.6 var(--serif); }
+.story .queue { font: 14px/1.5 var(--sans); color: var(--ink); background: var(--copper-soft); border-radius: 6px;
+  padding: 8px 10px; margin-bottom: 10px; white-space: normal; }
+.cursor { display: inline-block; width: 0.5em; height: 1.05em; vertical-align: -0.15em; background: var(--copper);
+  margin-left: 1px; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+.meter { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.meter > div { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+.meter .k { font: 11px/1.3 var(--sans); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.meter .v { font: 600 18px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+.meter .v.live { color: var(--copper); }
+form { display: flex; flex-direction: column; gap: 10px; }
+textarea { width: 100%; min-height: 64px; resize: vertical; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink); font: 16px/1.45 var(--serif); }
+textarea:focus, button:focus-visible, input:focus-visible { outline: 2px solid var(--copper); outline-offset: 2px; }
+.examples { display: flex; flex-wrap: wrap; gap: 6px; }
+.examples button { font: 13px/1 var(--sans); padding: 7px 10px; border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); cursor: pointer; }
+.examples button:hover { color: var(--ink); border-color: var(--muted); }
+.controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.controls label { display: flex; flex-direction: column; gap: 4px; font: 12px/1.3 var(--sans); color: var(--muted); min-width: 0; }
+.controls b { font: 600 13px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--copper); }
+.actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.go { font: 600 15px/1 var(--sans); padding: 12px 22px; border-radius: 8px; border: 0; cursor: pointer;
+  background: var(--copper); color: #fff; }
+.go[disabled] { opacity: 0.5; cursor: default; }
+.stop { font: 14px/1 var(--sans); padding: 11px 16px; border-radius: 8px; border: 1px solid var(--line);
+  background: transparent; color: var(--ink); cursor: pointer; }
+.status { font: 13px/1.4 var(--sans); color: var(--muted); }
+.status.err { color: var(--copper); }
+.modes { display: flex; gap: 6px; }
+.modes button { font: 600 13px/1 var(--sans); padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line);
+  background: transparent; color: var(--muted); cursor: pointer; }
+.modes button[aria-pressed="true"] { background: var(--copper-soft); color: var(--ink); border-color: var(--copper); }
+.words { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.words .wl { display: flex; flex-direction: column; gap: 4px; min-width: 0; font: 11px/1.3 var(--sans); color: var(--muted);
+  letter-spacing: 0.04em; text-transform: uppercase; }
+.words input { min-width: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--ink); font: 16px/1.3 var(--serif); }
+.words input:focus { outline: 2px solid var(--copper); outline-offset: 2px; }
+.feats { display: flex; flex-wrap: wrap; gap: 6px; }
+.feats label { display: inline-flex; align-items: center; gap: 6px; font: 13px/1 var(--sans); padding: 7px 10px;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+.feats input { accent-color: var(--copper); margin: 0; }
+.feats label:has(input:checked) { color: var(--ink); border-color: var(--copper); background: var(--copper-soft); }
+.hint { font: 12px/1.4 var(--sans); color: var(--muted); }
+.story .order { color: var(--copper); font: 14px/1.5 var(--sans); display: block; margin-bottom: 8px; }
+footer { font: 12px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+@media (max-width: 480px) { .meter { grid-template-columns: repeat(2, 1fr); } .controls { grid-template-columns: 1fr; } .words { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>micro<span>-qwen3</span></h1>
+    <div class="chip" id="chip">ESP32-S3 · no cloud</div>
+  </header>
+
+  <div class="story" id="story" aria-live="polite"><span class="empty">Start a story in English and the model will finish it right on the chip. Every word below is computed by the microcontroller, no internet needed.</span></div>
+
+  <div class="meter">
+    <div><div class="k">tokens</div><div class="v" id="m-n">0</div></div>
+    <div><div class="k">tok/s</div><div class="v live" id="m-tps">—</div></div>
+    <div><div class="k">time</div><div class="v" id="m-t">0.0 s</div></div>
+    <div><div class="k">parameters</div><div class="v" id="m-p">—</div></div>
+  </div>
+
+  <form id="f">
+    <div class="modes" role="group" aria-label="Mode">
+      <button type="button" id="mode-order" aria-pressed="true">Order a story</button>
+      <button type="button" id="mode-cont" aria-pressed="false">Continue text</button>
+    </div>
+    <div id="order">
+      <div class="words">
+        <label class="wl">verb<input id="w1" maxlength="16" placeholder="jump" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+        <label class="wl">noun<input id="w2" maxlength="16" placeholder="moon" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+        <label class="wl">adjective<input id="w3" maxlength="16" placeholder="happy" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <div class="feats">
+        <label><input type="checkbox" value="dialogue" checked>dialogue</label>
+        <label><input type="checkbox" value="a bad ending">sad ending</label>
+        <label><input type="checkbox" value="a moral">moral</label>
+        <label><input type="checkbox" value="a plot twist">plot twist</label>
+        <label><input type="checkbox" value="a conflict">conflict</label>
+        <label><input type="checkbox" value="foreshadowing">foreshadowing</label>
+      </div>
+      <div class="hint">One to three English words, as in the training data: a verb, a noun, an adjective. Empty fields are skipped. The model weaves the words in by itself, and the board gives a gentle push to words not used yet. A one-million-parameter model follows the plot options only loosely: this is an honest experiment.</div>
+    </div>
+    <div id="cont" hidden>
+    <textarea id="prompt" maxlength="300" placeholder="Once upon a time">Once upon a time</textarea>
+    <div class="examples">
+      <button type="button">Once upon a time, there was a little dog named</button>
+      <button type="button">Tom had a red ball</button>
+      <button type="button">Lily found a small box in the garden</button>
+      <button type="button">The sun was shining and the birds</button>
+    </div>
+    </div>
+    <div class="controls">
+      <label>temperature <b id="v-t">0.8</b><input id="t" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
+      <label>top-k <b id="v-k">40</b><input id="k" type="range" min="1" max="64" step="1" value="40"></label>
+      <label>length, tokens <b id="v-n">160</b><input id="n" type="range" min="16" max="240" step="8" value="160"></label>
+    </div>
+    <div class="actions">
+      <button class="go" id="go" type="submit">Write</button>
+      <button class="stop" id="stop" type="button" hidden>Stop</button>
+      <span class="status" id="status"></span>
+    </div>
+  </form>
+
+  <footer id="foot">micro-qwen3: the Qwen3 architecture, scaled down about 560 times. Trained on TinyStories.</footer>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const story = $("story"), go = $("go"), stop = $("stop"), status = $("status");
+let es = null, t0 = 0, n = 0, timer = null;
+
+for (const [id, out] of [["t", "v-t"], ["k", "v-k"], ["n", "v-n"]]) {
+  const el = $(id), show = () => $(out).textContent = el.value;
+  el.addEventListener("input", show); show();
+}
+document.querySelectorAll(".examples button").forEach(b => b.addEventListener("click", () => { $("prompt").value = b.textContent; }));
+
+fetch("/api/info").then(r => r.json()).then(i => {
+  const core = i.params - (i.head_params || 0);
+  $("m-p").textContent = (core / 1e6).toFixed(2) + "M" + (i.head_params ? "+" : "");
+  $("chip").textContent = `${i.chip} · ${i.format} · ${i.cpu_mhz} MHz · no cloud`;
+  const headNote = i.head_params ? ` (+ ${i.head_params.toLocaleString("en-US")} in a separate output layer)` : "";
+  $("foot").textContent = `micro-qwen3 · ${core.toLocaleString("en-US")} parameters${headNote} · ${i.layers} layers × ${i.hidden} · vocabulary ${i.vocab} · weights ${i.format} · free: SRAM ${i.free_internal_kb} KB, PSRAM ${i.free_psram_kb} KB`;
+}).catch(() => {});
+
+let mode = "order";
+function setMode(m) {
+  mode = m;
+  // orders use 0.6: with the word bonus all three words appear in 100% of stories, with about half the repeats of 0.5
+  $("t").value = m === "order" ? 0.6 : 0.8; $("v-t").textContent = $("t").value;
+  $("mode-order").setAttribute("aria-pressed", m === "order");
+  $("mode-cont").setAttribute("aria-pressed", m === "cont");
+  $("order").hidden = m !== "order"; $("cont").hidden = m !== "cont";
+}
+$("mode-order").addEventListener("click", () => setMode("order"));
+$("mode-cont").addEventListener("click", () => setMode("cont"));
+setMode("order");   // default: story order (with its temperature 0.6)
+
+// Order -> a prompt in the Qwen chat format, exactly how the model saw tasks during fine-tuning (TinyStoriesInstruct)
+function orderPrompt() {
+  let words = ["w1", "w2", "w3"].map(id => $(id).value.trim().toLowerCase().replace(/[^a-z'-]/g, "")).filter(Boolean);
+  if (!words.length) words = ["w1", "w2", "w3"].map(id => $(id).placeholder);   // nothing typed: use the placeholder example
+  const feats = [...document.querySelectorAll(".feats input:checked")].map(c => c.value);
+  let req = `Write a short story. Use the words: ${words.join(", ")}.`;
+  if (feats.length) req += ` The story should have ${feats.join(", ")}.`;
+  const label = "Order: " + words.join(", ") + (feats.length ? " · " + [...document.querySelectorAll(".feats input:checked")].map(c => c.parentElement.textContent).join(", ") : "");
+  return { prompt: `<|im_start|>user\n${req}<|im_end|>\n<|im_start|>assistant\n`, label, words };
+}
+
+function setRunning(on) { go.disabled = on; stop.hidden = !on; }
+function tick() {
+  const s = (performance.now() - t0) / 1000;
+  $("m-t").textContent = s.toFixed(1) + " s";
+  if (n > 1 && s > 0) $("m-tps").textContent = (n / s).toFixed(1);
+}
+function finish(msg, err) {
+  if (es) { es.close(); es = null; }
+  clearInterval(timer); tick(); setRunning(false);
+  story.querySelector(".cursor")?.remove();
+  status.textContent = msg || ""; status.className = "status" + (err ? " err" : "");
+}
+
+$("f").addEventListener("submit", e => {
+  e.preventDefault();
+  const o = mode === "order" ? orderPrompt() : null;
+  const p = o ? o.prompt : $("prompt").value.trim();
+  if (!p || es) return;
+  story.textContent = "";
+  const pr = document.createElement("span");
+  if (o) { pr.className = "order"; pr.textContent = o.label; } else { pr.className = "prompt"; pr.textContent = p; }
+  const gen = document.createElement("span");
+  const cur = document.createElement("span"); cur.className = "cursor";
+  const wait = document.createElement("div"); wait.className = "queue"; wait.hidden = true;
+  story.append(wait, pr, gen, cur);
+  story.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  n = 0; t0 = performance.now(); $("m-n").textContent = "0"; $("m-tps").textContent = "—";
+  status.textContent = "the board is thinking…"; status.className = "status";
+  setRunning(true);
+  timer = setInterval(tick, 200);
+  const q = new URLSearchParams({ prompt: p, t: $("t").value, k: $("k").value, n: $("n").value });
+  if (o) q.set("w", o.words.join(","));   // the board pushes these words until they appear
+  es = new EventSource("/api/generate?" + q);
+  es.onmessage = ev => {
+    const [piece, k] = JSON.parse(ev.data);   // the board sends tokens in batches: ["text", token count]
+    if (n === 0) {   // speed is measured from the first token
+      t0 = performance.now(); status.textContent = "the board is writing your story…";
+      const w = story.querySelector(".queue"); if (w) w.hidden = true;
+    }
+    gen.textContent += piece; n += k;
+    $("m-n").textContent = n;
+  };
+  es.addEventListener("done", ev => {
+    const d = JSON.parse(ev.data);
+    $("m-tps").textContent = d.tps.toFixed(1);
+    finish(`done: ${d.n} tokens in ${d.s.toFixed(2)} s on the chip` + (d.wn ? ` · words: ${d.wu} of ${d.wn}` : ""));
+    $("m-tps").textContent = d.tps.toFixed(1);
+  });
+  es.addEventListener("queue", ev => {        // waiting for our turn: the board reports the position
+    const { pos } = JSON.parse(ev.data);
+    const msg = `In the queue: you are number ${pos}, ${pos - 1} ahead of you. The board is writing a story for another guest. Yours will start on its own.`;
+    const w = story.querySelector(".queue"); if (w) { w.textContent = msg; w.hidden = false; }
+    status.textContent = `in the queue: number ${pos}`; status.className = "status";
+    t0 = performance.now();
+  });
+  es.addEventListener("busy", () => finish("the queue is full (4 people), try again in a few seconds", true));
+  es.onerror = () => { if (es) finish(n ? "connection closed" : "could not reach the board", !n); };
+});
+stop.addEventListener("click", () => finish("stopped"));
+</script>
+</body>
+</html>

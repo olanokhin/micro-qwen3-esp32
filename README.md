@@ -1,0 +1,235 @@
+# micro-qwen3 on ESP32-S3
+
+A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **60 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
+
+The model follows the Qwen3 architecture block by block and is trained from scratch on TinyStories. Its weights take **0.68 MB** (676,934 bytes) in a 4-bit format designed for the chip. Inference is a single dependency-free C file, and the same file runs on a computer for testing.
+
+To watch the same model work step by step in your browser, open [TensorLupa](https://tensorlupa.com). You can see the words it weighs, where its attention looks, and what flows through each layer.
+
+> Not affiliated with Qwen or Alibaba Cloud. "Qwen3" refers to the architecture. The weights, the 4096-token vocabulary and the sizes are our own.
+
+## What is in this repository
+
+| Folder | Contents |
+|---|---|
+| `firmware/` | ESP-IDF project: the inference engine (`microqwen.c`, `microqwen.h`), the web demo (`main/`), the partition table |
+| `host/` | The same engine built for macOS or Linux, to run the model without a board |
+| `models/` | The demo model in W4R format, its tokenizer and a reference output for the parity check |
+| `parity/` | Checks that the C engine gives the same tokens and logits as the reference in MLX |
+| `training/` | The model and training code (MLX), data preparation, export to W4R, the two training recipes |
+| `logs/` | Training and evaluation logs of the two runs behind the demo model |
+
+## Flash a board
+
+You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8) and ESP-IDF 5.3.
+
+```bash
+cd firmware
+idf.py set-target esp32s3
+idf.py -p PORT flash
+# the model goes into its own partition
+esptool.py --port PORT --chip esp32s3 --after no_reset write_flash 0x210000 ../models/tsim900-sft-x-w4r.bin
+```
+
+Ready-made firmware and model files are attached to each [release](../../releases).
+
+**Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story token by token and shows the speed. You can set the temperature and top-k, or order a story with up to three words. Up to four guests can queue at once. The serial console works too.
+
+The model runs on core 1, while Wi-Fi and the web server run on core 0.
+
+## Run it on a computer
+
+```bash
+make -C host
+./host/microqwen models/tsim900-sft-x-w4r.bin gen "Once upon a time" 200 0.6 40
+```
+
+## Parity check
+
+The C engine works in integers on the board: 4-bit weights and 8-bit activations. The reference is the same quantized model simulated in MLX in floating point.
+
+```bash
+uv sync
+uv run parity/check_c.py --bin models/tsim900-sft-x-w4r.bin --tokenizer models/tsim900-sft-x.tokenizer.json --exe host/microqwen
+```
+
+Current result for the demo model:
+
+| Check | Result |
+|---|---|
+| Tokenizer | the same tokens as Hugging Face `tokenizers` on all 9 test strings |
+| Logits at the last prompt position | largest difference 0.24, at a logit scale of about 14 |
+| Top-1 and top-5 next tokens | the same |
+| Greedy generation | the same first 49 of 60 tokens |
+
+The greedy runs part where two tokens are almost equally likely and the small integer difference tips the choice.
+
+## The model
+
+| | Qwen3-0.6B | micro-qwen3 |
+|---|---|---|
+| Block | RMSNorm (pre-norm), GQA, QK-norm, RoPE, SwiGLU, no bias, tied embeddings | the same |
+| Layers × hidden size | 28 × 1024 | **3 × 112** |
+| MLP | 3072 | 336 |
+| Attention | 16 heads × 128, 8 KV heads | 4 heads × 64, 2 KV heads |
+| Vocabulary | 151,936 | 4096, byte-level BPE with the Qwen pre-tokenizer |
+| Context | 32K | 256 |
+| Parameters | about 596M | 1.057M |
+
+At this size the model knows grammar, punctuation and the shape of a children's story. It does not know facts about the world, which do not fit into a million parameters.
+
+## How the architecture was chosen
+
+Every size and setting above came from a grid of short training runs. This repository keeps only the winner, with its full recipe and logs. Below are the summaries of the grids.
+
+**How the grids were run:**
+- Quality is bits per byte (bpb) on held-out text. Unlike perplexity, it stays comparable across tokenizers.
+- Each variant was trained once, so differences under about 0.01 bpb count as ties.
+- The shape grids used 500 MB of FineWeb-Edu; the data and precision grids used TinyStories.
+
+**Vocabulary** (about 0.6M parameters):
+
+| Tokens | 2048 | **4096** | 8192 |
+|---|---|---|---|
+| val bpb | 1.747 | **1.710** | 1.785 |
+
+A smaller vocabulary means tiny tokens. A larger one lets the embeddings eat the budget of the layers.
+
+**Depth against width** (fixed budget of about 0.6M parameters):
+
+| Layers × width | 2 × 96 | **3 × 88** | 4 × 80 | 7 × 64 | 15 × 48 | 28 × 32 (Qwen proportions) |
+|---|---|---|---|---|---|---|
+| val bpb | 1.774 | **1.694** | 1.701 | 1.710 | 1.744 | stopped, 0.15 behind |
+| Training speed, tokens/s | 336K | 273K | 234K | 187K | 103K | about 70K |
+
+Three or four layers are best, with a cliff at two. A faithful 28-layer miniature of Qwen3 was the worst: Qwen's layer count does not scale down a thousand times, but its width-to-depth ratio does.
+
+**Attention.** Quality follows the product "heads × head size", while time follows the number of heads. Four heads of 64 gave the best quality per second.
+
+**The final shape** (about 1M parameters, attention 4 × 64):
+
+| Shape | val bpb | Training speed |
+|---|---|---|
+| **3 × 112** | **1.612** | **261K tokens/s** |
+| 4 × 96 | 1.614 | 237K tokens/s |
+
+A tie in quality, and three layers are 9% faster.
+
+**Context.** 512 tokens instead of 256 gave only 0.8% better bpb at 29% lower speed. The model barely uses distant context, so the demo uses 256.
+
+**Data.** The demo uses TinyStories V2 (stories written by GPT-4). A run of the same model on the first version of TinyStories did not beat it on V2 stories (0.769 against 0.669 bpb).
+
+**Precision.** Is a larger model with fewer bits per weight better at the same memory on the board? At about 770 KiB (0.8 MB), 4-bit weights win:
+
+| Weights | Parameters | On the board | val bpb |
+|---|---|---|---|
+| ternary layers, 3 × 192 | 2.23M | 782 KiB | 0.697 |
+| int2 layers, 3 × 192 | 2.23M | 782 KiB | 0.698 |
+| **int4, 3 × 144** | 1.48M | 764 KiB | **0.643** |
+
+Below 4 bits quality drops in a step, and int2 and ternary hit the same floor that more training data does not break. int3 recovers well with quantization-aware training, but lands on the same quality-per-byte line as int4, so it does not pay for a more complex kernel.
+
+## How the demo model was made
+
+Two training runs on a MacBook (M3 Pro) with MLX: TinyStories V2 from scratch, then TinyStoriesInstruct on top. The recipes are in `training/recipes/`, and the logs and evaluations are in `logs/`.
+
+1. **Base model `ts2-base`.** Trained from scratch on TinyStories V2 (stories written by GPT-4), 500 MB of text, bf16, AdamW, learning rate 3e-3 with cosine decay.
+2. **Instruction tuning `tsim900-sft-x`.** Further training on 900K dialogues from TinyStoriesInstruct converted to the Qwen chat format. The loss counts only the answer. This run trains on 600 MB of text with learning rate 1e-3, and quantization-aware training (QAT) for the 4-bit format runs from the start, so the model learns with the weights it will have on the chip.
+3. **Export to W4R.** Weights become 4-bit integers with one scale per row. The scale is searched per row to minimise the error.
+
+```bash
+uv sync
+uv run training/scripts/prepare_data.py --dataset tinystories-v2 --num-docs 800000 --out data/ts2-v4096-qwen
+uv run training/scripts/train.py --recipe training/recipes/ts2-base.json --out runs/ts2-base
+uv run training/scripts/prepare_data.py --dataset tinystories-instruct --num-docs 900000 \
+    --tokenizer data/ts2-v4096-qwen/tokenizer.json --out data/tsim900-v4096-qwen
+uv run training/scripts/train.py --recipe runs/ts2-base/recipe.json --data data/tsim900-v4096-qwen --init-from runs/ts2-base \
+    --train-bytes 6e8 --lr 1e-3 --warmup 100 --qat int4row-clip --out runs/tsim900-sft-x
+uv run training/scripts/export_esp.py --ckpt runs/tsim900-sft-x --bits 4r --clip --out models/tsim900-sft-x-w4r.bin
+```
+
+The export reproduces `models/tsim900-sft-x-w4r.bin` byte for byte from the trained checkpoint. The full-precision weights of both runs, with the 8-bit and 4-bit builds, are on Hugging Face: [olanokhin/micro-qwen3](https://huggingface.co/olanokhin/micro-qwen3).
+
+### Stories with requested words
+
+Instruction tuning alone gets all three requested words into the story only 64% of the time. The model "wants" the words: their logits are high at every step, but rarely high enough to win. A small decoding rule closes the gap:
+
+```
+bias = base · (u + 1) · (1 + t / τ)        base 2, τ 100, temperature 0.6
+  u: how many requested words are already in the text (each found word raises the pressure on the rest)
+  t: tokens since the last requested word appeared (the longer it waits, the stronger the push)
+```
+
+With this rule, all three words appear in 100% of 200 test orders. A small spelling automaton (FSM) finishes multi-token words correctly once they start, and only allows the endings English spelling allows (daring, stopped, invitations). The same rules run on the board.
+
+Sampling uses top-k 40 and **min-p 0.02**: a token 50 or more times less likely than the favourite is never drawn. Such rare draws are how invented words begin. With the board's settings (4-bit weights, a simple repetition penalty), the cut lowers the share of stories with an invented word from 4.0% to 0.7% of 300 stories on orders the model had never seen; looping stories go from 4% to 6%. The board keeps the simple penalty because it needs no table; the [TensorLupa](https://tensorlupa.com) studio uses one that knows which repeats are natural in children's stories.
+
+## How the 4-bit weights were made
+
+W4R is not plain int4. The goal was 4-bit weights that behave as close as possible to 8-bit ones.
+
+**Result for the demo model.** Measured in a simulation of the device on TinyStories V2 held-out text, against the same model in full precision:
+
+| Weights | Loss, bpb | |
+|---|---|---|
+| int8, one scale per row | +0.000 | lossless |
+| int4, plain rounding | +0.045 | about 6% worse text by this metric |
+| **W4R** | **+0.015** | about 2%: two thirds of the 4-bit loss won back |
+
+W4R does not fully reach 8 bits, but it is much smaller (0.68 MB against 1.14 MB) and faster on the board (76 tokens per second against 54).
+
+**Against standard QAT.** On the base model of the same line (0.669 bpb in full precision), with the same 100 MB of further training for both QAT variants:
+
+| Variant | Loss, bpb |
+|---|---|
+| int4, plain rounding | +0.045 |
+| int4 with the scale search, no training | +0.037 |
+| standard int4 QAT | +0.029 |
+| **W4R: QAT with the scale search** | **+0.022** |
+
+The scale search inside QAT cuts the loss of standard int4 QAT by about a quarter.
+
+**How the recipe was found.** The search ran on an earlier model of the same shape (3 × 112). The demo model inherited the result: QAT with the per-row scale search. A check on the demo model confirmed it, and also confirmed that a Hadamard rotation makes things worse once QAT is in place (+0.024 instead of +0.015).
+
+Steps of the search, each measured on the same held-out text in a simulation of the device (weights quantized, activations int8):
+
+| Step | val bpb | Cost against full weights |
+|---|---|---|
+| Full-precision weights | 0.786 | |
+| int8, one scale per row | 0.786 | none |
+| int4, one scale per row, plain rounding | 0.832 | +0.046 |
+| + per-row scale search with clipping | 0.824 | |
+| + Hadamard rotation before quantizing | 0.818 | |
+| Quantization-aware training (QAT) for int4, 100 MB of text | 0.817 | |
+| **QAT with the per-row scale search** | **0.809** | **+0.023**, the chosen recipe |
+| Hadamard rotation baked into the weights, then QAT | 0.801 | needs an untied output layer: +458K parameters, 0.96 MB instead of 0.68 MB |
+| The same rotation at an equal parameter budget | 0.808 to 0.811 | the same as without rotation |
+
+**What the steps show:**
+- **Per-row scale search.** For each row, it tries 25 clipping levels between 40% and 100% of the largest weight and keeps the one with the smallest error. Clipping a few outliers lets the other weights use the 15 levels more finely.
+- **QAT.** The same search runs inside training, so the model learns weights that survive it. Together they cut the int4 loss in half.
+- **Hadamard rotation.** It spreads outliers across a row and helped plain rounding. Once the scale search and QAT were in place, it gave nothing extra at the same number of parameters. Its apparent gain came from a separate output layer, which means more parameters, not a better format.
+- **Weight groups.** int4 with a separate scale for every 32 weights (as in GGUF Q4) was tested on the board and ran slower than int8: leaving the integer pipeline every 32 weights costs more than the smaller weights save. One scale per row keeps the whole dot product in integers, and the scale is applied once at the end.
+
+The demo model uses this recipe directly: instruction tuning runs with QAT and the scale search from the first step (`--qat int4row-clip`), and the export applies the same search (`--clip`).
+
+## Speed on the chip
+
+| Step | Tokens per second |
+|---|---|
+| Scalar C, int8 weights | 13.6 |
+| + PIE vector instructions (16 int8 multiplies per instruction) | 43.8 |
+| + int8 KV cache in internal SRAM, attention also on PIE | 54.0 |
+| + W4R weights: two int4 per byte, one scale per row, unpacked in registers | 76.0 |
+
+These are decode benchmarks on short generations, 64 to 128 tokens on one core. Attention cost grows with the text, so a full story of 150 to 220 tokens averages about 60 tokens per second. Splitting the matrix work across both cores reached 80.7 tokens per second, but the firmware keeps core 0 for Wi-Fi and the web server.
+
+The current firmware, with min-p and the spelling rules, measures 74 tokens per second in the same benchmark and 58 to 61 on full stories with requested words.
+
+Grouped int4 and the Hadamard rotation were also tried, see [How the 4-bit weights were made](#how-the-4-bit-weights-were-made).
+
+## License
+
+Apache 2.0, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The training data, TinyStories and TinyStoriesInstruct by Eldan and Li (2023), is released under CDLA-Sharing-1.0.
+
+Made by [Alex Anokhin](https://github.com/olanokhin).
