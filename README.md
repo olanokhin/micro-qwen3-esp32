@@ -25,11 +25,11 @@ You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8).
 
 **From the browser.** Open [tensorlupa.com/flash](https://tensorlupa.com/flash) in Chrome or Edge on a computer, plug the board in and press one button. The page walks you through every step.
 
-**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.0.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
+**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.1.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
 
 ```bash
 pip install esptool
-esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.0.bin
+esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.1.bin
 ```
 
 **From source,** with ESP-IDF 5.3:
@@ -42,7 +42,9 @@ idf.py -p PORT flash
 esptool.py --port PORT --chip esp32s3 --after no_reset write_flash 0x210000 ../models/tsim900-sft-x-w4r.bin
 ```
 
-**Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story token by token and shows the speed. You can set the temperature and top-k, or order a story with up to three words. Up to four guests can queue at once. The serial console works too.
+**Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story token by token and shows the speed. Type up to three words, or tap one of the seven tested orders. You can set the temperature, top-k, the length and the seed: the same seed writes the same story again, and the page shows the seed of every story. Up to four guests can queue at once.
+
+The serial console works too: type the start of a story, or `/words cat moon cake` to order one; `/seed 33` before it fixes the seed of the next story.
 
 The model runs on core 1, while Wi-Fi and the web server run on core 0.
 
@@ -52,6 +54,16 @@ The model runs on core 1, while Wi-Fi and the web server run on core 0.
 make -C host
 ./host/microqwen models/tsim900-sft-x-w4r.bin gen "Once upon a time" 200 0.6 40
 ```
+
+A story order with the board's own loop (the word bonus, the spelling automaton, the loop penalty), for one seed or a range of seeds:
+
+```bash
+make -C host order
+./host/order models/tsim900-sft-x-w4r.bin "dragon, cookie, school" 33
+./host/order models/tsim900-sft-x-w4r.bin "dragon, cookie, school" 1..200    # one line per seed
+```
+
+A seed found on a computer is only a candidate for the board. The integer core is the same, but the chip and a computer round a few float steps differently: of 7 seeds we compared, 3 stories matched letter for letter and 4 went another way after 100 to 480 characters. The seven orders on the board's page were chosen and read on a real ESP32-S3, and each repeats exactly from run to run.
 
 ## Parity check
 

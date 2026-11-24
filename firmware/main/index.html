@@ -54,7 +54,7 @@ textarea:focus, button:focus-visible, input:focus-visible { outline: 2px solid v
 .examples button { font: 13px/1 var(--sans); padding: 7px 10px; border-radius: 999px; border: 1px solid var(--line);
   background: transparent; color: var(--muted); cursor: pointer; }
 .examples button:hover { color: var(--ink); border-color: var(--muted); }
-.controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .controls label { display: flex; flex-direction: column; gap: 4px; font: 12px/1.3 var(--sans); color: var(--muted); min-width: 0; }
 .controls b { font: 600 13px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
 input[type=range] { width: 100%; accent-color: var(--copper); }
@@ -70,21 +70,24 @@ input[type=range] { width: 100%; accent-color: var(--copper); }
 .modes button { font: 600 13px/1 var(--sans); padding: 9px 14px; border-radius: 999px; border: 1px solid var(--line);
   background: transparent; color: var(--muted); cursor: pointer; }
 .modes button[aria-pressed="true"] { background: var(--copper-soft); color: var(--ink); border-color: var(--copper); }
-.words { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.words .wl { display: flex; flex-direction: column; gap: 4px; min-width: 0; font: 11px/1.3 var(--sans); color: var(--muted);
-  letter-spacing: 0.04em; text-transform: uppercase; }
-.words input { min-width: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
-  color: var(--ink); font: 16px/1.3 var(--serif); }
-.words input:focus { outline: 2px solid var(--copper); outline-offset: 2px; }
-.feats { display: flex; flex-wrap: wrap; gap: 6px; }
-.feats label { display: inline-flex; align-items: center; gap: 6px; font: 13px/1 var(--sans); padding: 7px 10px;
-  border-radius: 999px; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
-.feats input { accent-color: var(--copper); margin: 0; }
-.feats label:has(input:checked) { color: var(--ink); border-color: var(--copper); background: var(--copper-soft); }
+.words { display: block; width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--ink); font: 16px/1.3 var(--mono); }
+.words:focus { outline: 2px solid var(--copper); outline-offset: 2px; }
+#order, #cont { display: flex; flex-direction: column; gap: 8px; }
+#order[hidden], #cont[hidden] { display: none; }
+.picks-t { font: 12px/1.4 var(--sans); color: var(--muted); }
+.examples button.on { color: var(--ink); border-color: var(--copper); background: var(--copper-soft); }
+.seed { display: flex; align-items: flex-end; gap: 6px; }
+.seed input { width: 100%; min-width: 0; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  font: 600 13px var(--mono); }
+.seed button { flex: none; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; font: 13px/1.3 var(--sans); }
+.seed button:hover { color: var(--ink); border-color: var(--muted); }
+footer a { color: var(--copper); }
 .hint { font: 12px/1.4 var(--sans); color: var(--muted); }
 .story .order { color: var(--copper); font: 14px/1.5 var(--sans); display: block; margin-bottom: 8px; }
 footer { font: 12px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
-@media (max-width: 480px) { .meter { grid-template-columns: repeat(2, 1fr); } .controls { grid-template-columns: 1fr; } .words { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .controls { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .meter { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
 <body>
@@ -94,7 +97,7 @@ footer { font: 12px/1.6 var(--mono); color: var(--muted); border-top: 1px solid 
     <div class="chip" id="chip">ESP32-S3 · no cloud</div>
   </header>
 
-  <div class="story" id="story" aria-live="polite"><span class="empty">Start a story in English and the model will finish it right on the chip. Every word below is computed by the microcontroller, no internet needed.</span></div>
+  <div class="story" id="story" aria-live="polite"><span class="empty">Give the model up to three English words and it will write a short story with them, right on the chip. Every token below is computed by the microcontroller, no internet needed.</span></div>
 
   <div class="meter">
     <div><div class="k">tokens</div><div class="v" id="m-n">0</div></div>
@@ -105,47 +108,39 @@ footer { font: 12px/1.6 var(--mono); color: var(--muted); border-top: 1px solid 
 
   <form id="f">
     <div class="modes" role="group" aria-label="Mode">
-      <button type="button" id="mode-order" aria-pressed="true">Order a story</button>
-      <button type="button" id="mode-cont" aria-pressed="false">Continue text</button>
+      <button type="button" id="mode-order" aria-pressed="true">Instruct</button>
+      <button type="button" id="mode-cont" aria-pressed="false">Completion</button>
     </div>
     <div id="order">
-      <div class="words">
-        <label class="wl">verb<input id="w1" maxlength="16" placeholder="jump" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
-        <label class="wl">noun<input id="w2" maxlength="16" placeholder="moon" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
-        <label class="wl">adjective<input id="w3" maxlength="16" placeholder="happy" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
-      </div>
-      <div class="feats">
-        <label><input type="checkbox" value="dialogue" checked>dialogue</label>
-        <label><input type="checkbox" value="a bad ending">sad ending</label>
-        <label><input type="checkbox" value="a moral">moral</label>
-        <label><input type="checkbox" value="a plot twist">plot twist</label>
-        <label><input type="checkbox" value="a conflict">conflict</label>
-        <label><input type="checkbox" value="foreshadowing">foreshadowing</label>
-      </div>
-      <div class="hint">One to three English words, as in the training data: a verb, a noun, an adjective. Empty fields are skipped. The model weaves the words in by itself, and the board gives a gentle push to words not used yet. A one-million-parameter model follows the plot options only loosely: this is an honest experiment.</div>
+      <input class="words" id="words" maxlength="60" value="dragon, cookie, school" placeholder="up to three words: a verb, a noun, an adjective" autocapitalize="off" autocomplete="off" spellcheck="false" aria-label="Words for the story">
+      <div class="picks-t">Tried and tested. Tap one to write:</div>
+      <div class="examples" id="picks"></div>
+      <div class="hint">The model writes a story with your words. It weaves them in by itself; the board gives a growing push to the words not used yet (logit bias) and finishes a started word letter by letter (FSM). Only English words work: the model learned on English stories.</div>
     </div>
     <div id="cont" hidden>
-    <textarea id="prompt" maxlength="300" placeholder="Once upon a time">Once upon a time</textarea>
-    <div class="examples">
-      <button type="button">Once upon a time, there was a little dog named</button>
-      <button type="button">Tom had a red ball</button>
-      <button type="button">Lily found a small box in the garden</button>
-      <button type="button">The sun was shining and the birds</button>
-    </div>
+      <textarea id="prompt" maxlength="300" placeholder="Once upon a time">Once upon a time</textarea>
+      <div class="examples" id="starts">
+        <button type="button">Once upon a time, there was a little dog named</button>
+        <button type="button">Tom had a red ball</button>
+        <button type="button">Lily found a small box in the garden</button>
+        <button type="button">The sun was shining and the birds</button>
+      </div>
+      <div class="hint">The model continues your text. No words are pushed here: this is the model on its own.</div>
     </div>
     <div class="controls">
-      <label>temperature <b id="v-t">0.8</b><input id="t" type="range" min="0" max="1.5" step="0.05" value="0.8"></label>
+      <label>temperature <b id="v-t">0.6</b><input id="t" type="range" min="0" max="1.5" step="0.05" value="0.6"></label>
       <label>top-k <b id="v-k">40</b><input id="k" type="range" min="1" max="64" step="1" value="40"></label>
-      <label>length, tokens <b id="v-n">160</b><input id="n" type="range" min="16" max="240" step="8" value="160"></label>
+      <label>max new tokens <b id="v-n">160</b><input id="n" type="range" min="16" max="240" step="8" value="160"></label>
+      <label>seed<span class="seed"><input id="seed" inputmode="numeric" placeholder="random" autocomplete="off" aria-label="Seed"><button type="button" id="dice" title="Another story: a new random seed">new</button></span></label>
     </div>
     <div class="actions">
-      <button class="go" id="go" type="submit">Write</button>
+      <button class="go" id="go" type="submit">Generate</button>
       <button class="stop" id="stop" type="button" hidden>Stop</button>
       <span class="status" id="status"></span>
     </div>
   </form>
 
-  <footer id="foot">micro-qwen3: the Qwen3 architecture, scaled down about 560 times. Trained on TinyStories.</footer>
+  <footer><div id="foot">micro-qwen3: the Qwen3 architecture, scaled down about 560 times. Trained on TinyStories.</div><div>Sampling: top-k, then min-p 0.02, with a repetition penalty.</div><div>When you are back online, watch every step of this model in a browser: <a href="https://tensorlupa.com">tensorlupa.com</a>. Made by <a href="https://www.linkedin.com/in/olanokhin/">Alex Anokhin</a>.</div></footer>
 </div>
 <script>
 const $ = id => document.getElementById(id);
@@ -156,7 +151,29 @@ for (const [id, out] of [["t", "v-t"], ["k", "v-k"], ["n", "v-n"]]) {
   const el = $(id), show = () => $(out).textContent = el.value;
   el.addEventListener("input", show); show();
 }
-document.querySelectorAll(".examples button").forEach(b => b.addEventListener("click", () => { $("prompt").value = b.textContent; }));
+document.querySelectorAll("#starts button").forEach(b => b.addEventListener("click", () => { $("prompt").value = b.textContent; }));
+
+// Tried and tested orders: words and a seed. With the same seed the board writes the same story. Each of these was run
+// on a real ESP32-S3 and kept only if all words were used, the story ended by itself, had no repeated phrases and no
+// made-up words; then a person read it. The seeds are for the chip: a computer running the same code rounds a few
+// steps differently and may write another story for the same seed.
+const PICKS = [["dragon, cookie, school", 33], ["share, toy, kind", 61], ["find, treasure, brave", 40], ["run, dog, fast", 3],
+               ["fly, kite, red", 524], ["play, ball, happy", 246], ["robot, moon", 135]];
+PICKS.forEach(([words, seed]) => {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = words;
+  b.addEventListener("click", () => { $("words").value = words; $("seed").value = seed; markPick(); $("f").requestSubmit(); });
+  $("picks").appendChild(b);
+});
+function markPick() {   // a pick is lit only while both its words and its seed are in the fields
+  const w = parseWords().join(", "), sd = Number($("seed").value);
+  [...$("picks").children].forEach((b, i) => b.classList.toggle("on", PICKS[i][0] === w && PICKS[i][1] === sd));
+}
+// up to three English words (a-z, hyphen, apostrophe), split by spaces or commas; anything else is dropped
+function parseWords() {
+  return $("words").value.split(/[ ,]+/).filter(w => /^[a-z][a-z'-]{0,22}$/i.test(w)).map(w => w.toLowerCase()).slice(0, 3);
+}
+$("words").addEventListener("input", markPick); $("seed").addEventListener("input", markPick);
+$("dice").addEventListener("click", () => { $("seed").value = ""; markPick(); $("f").requestSubmit(); });
 
 fetch("/api/info").then(r => r.json()).then(i => {
   const core = i.params - (i.head_params || 0);
@@ -169,25 +186,20 @@ fetch("/api/info").then(r => r.json()).then(i => {
 let mode = "order";
 function setMode(m) {
   mode = m;
-  // orders use 0.6: with the word bonus all three words appear in 100% of stories, with about half the repeats of 0.5
-  $("t").value = m === "order" ? 0.6 : 0.8; $("v-t").textContent = $("t").value;
   $("mode-order").setAttribute("aria-pressed", m === "order");
   $("mode-cont").setAttribute("aria-pressed", m === "cont");
   $("order").hidden = m !== "order"; $("cont").hidden = m !== "cont";
 }
 $("mode-order").addEventListener("click", () => setMode("order"));
 $("mode-cont").addEventListener("click", () => setMode("cont"));
-setMode("order");   // default: story order (with its temperature 0.6)
+setMode("order");
 
 // Order -> a prompt in the Qwen chat format, exactly how the model saw tasks during fine-tuning (TinyStoriesInstruct)
 function orderPrompt() {
-  let words = ["w1", "w2", "w3"].map(id => $(id).value.trim().toLowerCase().replace(/[^a-z'-]/g, "")).filter(Boolean);
-  if (!words.length) words = ["w1", "w2", "w3"].map(id => $(id).placeholder);   // nothing typed: use the placeholder example
-  const feats = [...document.querySelectorAll(".feats input:checked")].map(c => c.value);
-  let req = `Write a short story. Use the words: ${words.join(", ")}.`;
-  if (feats.length) req += ` The story should have ${feats.join(", ")}.`;
-  const label = "Order: " + words.join(", ") + (feats.length ? " · " + [...document.querySelectorAll(".feats input:checked")].map(c => c.parentElement.textContent).join(", ") : "");
-  return { prompt: `<|im_start|>user\n${req}<|im_end|>\n<|im_start|>assistant\n`, label, words };
+  const words = parseWords();
+  if (!words.length) return null;
+  return { prompt: `<|im_start|>user\nWrite a short story. Use the words: ${words.join(", ")}.<|im_end|>\n<|im_start|>assistant\n`,
+           label: "Words: " + words.join(", "), words };
 }
 
 function setRunning(on) { go.disabled = on; stop.hidden = !on; }
@@ -205,9 +217,11 @@ function finish(msg, err) {
 
 $("f").addEventListener("submit", e => {
   e.preventDefault();
+  if (es) return;
   const o = mode === "order" ? orderPrompt() : null;
+  if (mode === "order" && !o) { status.textContent = "Type one to three English words, for example: dragon, cookie, school"; status.className = "status err"; return; }
   const p = o ? o.prompt : $("prompt").value.trim();
-  if (!p || es) return;
+  if (!p) return;
   story.textContent = "";
   const pr = document.createElement("span");
   if (o) { pr.className = "order"; pr.textContent = o.label; } else { pr.className = "prompt"; pr.textContent = p; }
@@ -221,6 +235,8 @@ $("f").addEventListener("submit", e => {
   setRunning(true);
   timer = setInterval(tick, 200);
   const q = new URLSearchParams({ prompt: p, t: $("t").value, k: $("k").value, n: $("n").value });
+  const sd = Math.floor(Number($("seed").value));            // empty or not a number: the board picks a random seed
+  if (sd >= 1 && sd <= 4294967295) q.set("seed", sd);
   if (o) q.set("w", o.words.join(","));   // the board pushes these words until they appear
   es = new EventSource("/api/generate?" + q);
   es.onmessage = ev => {
@@ -235,7 +251,8 @@ $("f").addEventListener("submit", e => {
   es.addEventListener("done", ev => {
     const d = JSON.parse(ev.data);
     $("m-tps").textContent = d.tps.toFixed(1);
-    finish(`done: ${d.n} tokens in ${d.s.toFixed(2)} s on the chip` + (d.wn ? ` · words: ${d.wu} of ${d.wn}` : ""));
+    finish(`done: ${d.n} tokens in ${d.s.toFixed(2)} s on the chip` + (d.wn ? ` · words ${d.wu} of ${d.wn}` : "") + (d.seed ? ` · seed ${d.seed}` : ""));
+    if (d.seed) { $("seed").value = d.seed; markPick(); }   // the seed that was used: press Generate again for the same story
     $("m-tps").textContent = d.tps.toFixed(1);
   });
   es.addEventListener("queue", ev => {        // waiting for our turn: the board reports the position

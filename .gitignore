@@ -9,3 +9,4 @@ firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
 .DS_Store
+host/order

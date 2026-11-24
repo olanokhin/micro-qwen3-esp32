@@ -39,19 +39,22 @@ static SemaphoreHandle_t model_lock;   // one generation at a time
 
 // ---------------------------------------------------------------- generation with a callback per token
 typedef int (*TokenCb)(void *ctx, const uint8_t *bytes, int len);   // return 0 to stop
-typedef struct { int n; double seconds, tps; int words_used, words_total; } GenStats;
+typedef struct { int n; double seconds, tps; int words_used, words_total; uint32_t seed; } GenStats;
 
 // Default word order: cascade 2 -> 4 -> 6 (tuned on 200 TinyStoriesInstruct prompts), ramp over time
 #define WB_BASE 2.0f
 #define WB_TAU 100.0f
-// The loop penalty is OFF: on 200 prompts it cut repeats (0.52% -> 0.09%), but on the board the model started
-// to dodge it with mangled words ("warnerer", "tighterer", "luxuxuury"). To enable: LP_IMM 3, LP_MULT 1.
-#define LP_IMM 0.0f
-#define LP_MULT 0.0f   // ×(1 + t/100): 99.5% of validation stories use all three words
+// The loop penalty is ON. It was off for a while: without a tail cut the model dodged it with mangled words
+// ("warnerer", "tighterer"). With min-p 0.02 and the spelling automaton that no longer happens. Measured on 300
+// stories from orders the model had never seen (4-bit weights, min-p 0.02): stories with a made-up word 2.3% -> 0.7%,
+// looping stories 13% -> 6%, all requested words in 296 -> 298 of 300. To switch it off: LP_IMM 0, LP_MULT 0.
+#define LP_IMM 3.0f
+#define LP_MULT 1.0f
 
 static GenStats generate(const char *prompt, const char *words, float wbase, float wtau,
                          int steps, float temp, int topk, uint64_t seed, TokenCb cb, void *ctx) {
     GenStats st = {0};
+    st.seed = (uint32_t)seed;
     int ids[256];
     int n = mq_encode(&M, prompt, ids, 200);
     if (n == 0) return st;
@@ -110,7 +113,7 @@ static GenStats generate(const char *prompt, const char *words, float wbase, flo
 }
 
 // ---------------------------------------------------------------- generation task (core 1)
-typedef struct { char prompt[640]; char words[80]; float wbase, wtau; float temp; int topk, steps; int to_console; } GenJob;   // 640: a chat prompt with options
+typedef struct { char prompt[640]; char words[80]; float wbase, wtau; float temp; int topk, steps; uint32_t seed; int to_console; } GenJob;   // 640: a chat prompt with options
 static QueueHandle_t job_q;               // generation jobs (core 0 -> core 1)
 static MessageBufferHandle_t tok_mb;      // tokens (core 1 -> core 0): one message = one token
 static volatile int gen_cancel, gen_done, gen_tokens;
@@ -130,19 +133,22 @@ static void gen_worker(void *arg) {
     for (;;) {
         xQueueReceive(job_q, &job, portMAX_DELAY);
         gen_cancel = 0; gen_tokens = 0;
-        gen_last = generate(job.prompt, job.words, job.wbase, job.wtau, job.steps, job.temp, job.topk, esp_random(),
+        // seed 0 means "pick one": a random seed from the chip. A given seed repeats the same story exactly,
+        // which is how the page offers tested orders and lets a guest share one.
+        uint32_t seed = job.seed ? job.seed : 1 + esp_random() % 99999;
+        gen_last = generate(job.prompt, job.words, job.wbase, job.wtau, job.steps, job.temp, job.topk, seed,
                             job.to_console ? to_console : to_buffer, NULL);
         gen_done = 1;
     }
 }
 
 // Queue a job and (for the console) wait until it ends. Called with model_lock held.
-static void submit(const char *prompt, const char *words, float wbase, float wtau, int steps, float temp, int topk, int to_cons) {
+static void submit(const char *prompt, const char *words, float wbase, float wtau, int steps, float temp, int topk, uint32_t seed, int to_cons) {
     static GenJob job;
     strlcpy(job.prompt, prompt, sizeof job.prompt);
     strlcpy(job.words, words ? words : "", sizeof job.words);
     job.wbase = wbase; job.wtau = wtau;
-    job.steps = steps; job.temp = temp; job.topk = topk; job.to_console = to_cons;
+    job.steps = steps; job.temp = temp; job.topk = topk; job.seed = seed; job.to_console = to_cons;
     xMessageBufferReset(tok_mb);
     gen_done = 0;
     xQueueSend(job_q, &job, portMAX_DELAY);
@@ -203,7 +209,7 @@ static SemaphoreHandle_t q_mutex;
 static uint32_t next_ticket, now_serving;
 static int waiting;
 
-typedef struct { httpd_req_t *req; char prompt[640]; char words[80]; float wbase, wtau; float temp; int topk, steps; uint32_t ticket; } WebJob;
+typedef struct { httpd_req_t *req; char prompt[640]; char words[80]; float wbase, wtau; float temp; int topk, steps; uint32_t seed; uint32_t ticket; } WebJob;
 
 static void web_job_task(void *arg) {
     WebJob *j = arg;
@@ -227,7 +233,7 @@ static void web_job_task(void *arg) {
     if (alive) {
         xSemaphoreTake(model_lock, portMAX_DELAY);
         printf("[web] ticket %lu: \"%s\" t=%.2f k=%d n=%d\n", (unsigned long)j->ticket, j->prompt, j->temp, j->topk, j->steps);
-        submit(j->prompt, j->words, j->wbase, j->wtau, j->steps, j->temp, j->topk, 0);
+        submit(j->prompt, j->words, j->wbase, j->wtau, j->steps, j->temp, j->topk, j->seed, 0);
         // each token is its own event, sent as soon as it is ready: generation on core 1 does not wait for the network,
         // so sending in small pieces does not slow the model and the text flows smoothly
         int one = 1;
@@ -249,8 +255,8 @@ static void web_job_task(void *arg) {
     xSemaphoreGive(q_mutex);
     if (alive) {
         char done[160];
-        snprintf(done, sizeof done, "event: done\ndata: {\"n\":%d,\"s\":%.3f,\"tps\":%.2f,\"wu\":%d,\"wn\":%d}\n\n",
-                 st.n, st.seconds, st.tps, st.words_used, st.words_total);
+        snprintf(done, sizeof done, "event: done\ndata: {\"n\":%d,\"s\":%.3f,\"tps\":%.2f,\"wu\":%d,\"wn\":%d,\"seed\":%lu}\n\n",
+                 st.n, st.seconds, st.tps, st.words_used, st.words_total, (unsigned long)st.seed);
         httpd_resp_sendstr_chunk(req, done);
         httpd_resp_send_chunk(req, NULL, 0);
     }
@@ -275,6 +281,7 @@ static esp_err_t h_generate(httpd_req_t *req) {
         if (httpd_query_key_value(q, "w", j->words, sizeof j->words) == ESP_OK) url_decode(j->words);
         if (httpd_query_key_value(q, "wb", v, sizeof v) == ESP_OK) j->wbase = strtof(v, NULL);
         if (httpd_query_key_value(q, "wt", v, sizeof v) == ESP_OK) j->wtau = strtof(v, NULL);
+        if (httpd_query_key_value(q, "seed", v, sizeof v) == ESP_OK) j->seed = (uint32_t)strtoul(v, NULL, 10);   // 0 or absent: a random one
     }
     free(q);
     if (j->steps < 1) j->steps = 1;
@@ -389,7 +396,7 @@ void app_main(void) {
     printf("the model runs on core 1; Wi-Fi, the web server and the console on core 0\n");
 
     xSemaphoreTake(model_lock, portMAX_DELAY);
-    submit("Once upon a time", NULL, 0, 0, 64, 0, 40, 1);
+    submit("Once upon a time", NULL, 0, 0, 64, 0, 40, 0, 1);
     while (!gen_done) vTaskDelay(pdMS_TO_TICKS(20));
     xSemaphoreGive(model_lock);
     GenStats st = gen_last;
@@ -402,25 +409,29 @@ void app_main(void) {
         if (!fgets(line, sizeof line, stdin)) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }
         line[strcspn(line, "\r\n")] = 0;
         if (!line[0]) { printf("> "); fflush(stdout); continue; }
-        // "/words cat moon cake": a story order in the Qwen chat format, as on the page (with dialogue)
+        // "/seed 35": the next story uses this seed (once), so a story can be repeated exactly
+        // "/words cat moon cake": a story order in the Qwen chat format, as on the page
         static char chat[640];
         const char *prompt = line, *words = NULL;
+        static uint32_t next_seed;
+        if (!strncmp(line, "/seed ", 6)) { next_seed = (uint32_t)strtoul(line + 6, NULL, 10); printf("seed %lu for the next story\n> ", (unsigned long)next_seed); fflush(stdout); continue; }
         if (!strncmp(line, "/words ", 7)) {
             words = line + 7;
             char w[3][17] = {{0}};
             int nw = sscanf(line + 7, "%16s %16s %16s", w[0], w[1], w[2]);
-            snprintf(chat, sizeof chat, "<|im_start|>user\nWrite a short story. Use the words: %s%s%s%s%s. "
-                     "The story should have dialogue.<|im_end|>\n<|im_start|>assistant\n",
+            snprintf(chat, sizeof chat, "<|im_start|>user\nWrite a short story. Use the words: %s%s%s%s%s."
+                     "<|im_end|>\n<|im_start|>assistant\n",
                      w[0], nw > 1 ? ", " : "", w[1], nw > 2 ? ", " : "", w[2]);
             prompt = chat;
         }
         xSemaphoreTake(model_lock, portMAX_DELAY);
         printf("%s", prompt == chat ? "[order] " : line);
-        submit(prompt, words, WB_BASE, WB_TAU, 240, words ? 0.6f : 0.8f, 40, 1);
+        submit(prompt, words, WB_BASE, WB_TAU, words ? 160 : 240, 0.6f, 40, next_seed, 1);   // as the page: 160 tokens, temperature 0.6
+        next_seed = 0;
         while (!gen_done) vTaskDelay(pdMS_TO_TICKS(20));
         st = gen_last;
         xSemaphoreGive(model_lock);
-        if (st.words_total) printf("\n[%d tokens, %.1f tok/s, words %d/%d]\n> ", st.n, st.tps, st.words_used, st.words_total);
+        if (st.words_total) printf("\n[%d tokens, %.1f tok/s, words %d/%d, seed %lu]\n> ", st.n, st.tps, st.words_used, st.words_total, (unsigned long)st.seed);
         else printf("\n[%d tokens, %.1f tok/s]\n> ", st.n, st.tps);
         fflush(stdout);
     }
