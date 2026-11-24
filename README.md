@@ -16,7 +16,7 @@ To watch the same model work step by step in your browser, open [TensorLupa](htt
 | `host/` | The same engine built for macOS or Linux, to run the model without a board |
 | `models/` | The demo model in W4R format, its tokenizer and a reference output for the parity check |
 | `parity/` | Checks that the C engine gives the same tokens and logits as the reference in MLX |
-| `training/` | The model and training code (MLX), data preparation, export to W4R, the two training recipes |
+| `training/` | The model and training code (MLX), data preparation, export to W4R, the two training recipes, and a Colab notebook that repeats the whole chain in PyTorch |
 | `logs/` | Training and evaluation logs of the two runs behind the demo model |
 
 ## Flash a board
@@ -170,6 +170,24 @@ uv run training/scripts/export_esp.py --ckpt runs/tsim900-sft-x --bits 4r --clip
 ```
 
 The export reproduces `models/tsim900-sft-x-w4r.bin` byte for byte from the trained checkpoint. The full-precision weights of both runs, with the 8-bit and 4-bit builds, are on Hugging Face: [olanokhin/micro-qwen3](https://huggingface.co/olanokhin/micro-qwen3).
+
+### Train it yourself in Colab
+
+No Mac is needed. [`training/colab/train_micro_qwen3.ipynb`](training/colab/train_micro_qwen3.ipynb) repeats the same recipe in PyTorch on a free T4 GPU: [open it in Colab](https://colab.research.google.com/github/olanokhin/micro-qwen3-esp32/blob/main/training/colab/train_micro_qwen3.ipynb), set the runtime to T4 GPU and run all cells. It downloads the two datasets, trains the tokenizer and both stages, exports the W4R file, builds the C engine and writes a story from the model it has just trained.
+
+A run on a T4, next to the runs behind the published weights:
+
+| | Colab, T4, PyTorch | MacBook, M3 Pro, MLX |
+|---|---|---|
+| Base model, bits per byte on held-out stories | 0.667 | 0.669 |
+| After instruction tuning, full-precision weights | 0.706 | 0.706 |
+| After instruction tuning, 4-bit weights | 0.721 | 0.721 |
+| Training time, base model | 7.1 min | 8.5 min |
+| Training time, instruction tuning | 10.2 min | 11 min |
+
+The tokenizer trained in Colab is the same file, byte for byte, as `models/tsim900-sft-x.tokenizer.json`. The weights are not: the two frameworks draw different random numbers, so this is the same recipe and the same quality, not the same model. The whole notebook, from an empty runtime to the story from the C engine, ran in 35 minutes: downloading and tokenizing the data takes about as long as the training itself.
+
+`QUICK = True` in the first code cell runs the whole chain on a small slice in a few minutes. The notebook is built from `training/colab/train_micro_qwen3.py`, which also runs as a plain script.
 
 ### Stories with requested words
 
