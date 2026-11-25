@@ -263,7 +263,7 @@ $("f").addEventListener("submit", e => {
     status.textContent = `in the queue: number ${pos}`; status.className = "status";
     t0 = performance.now();
   });
-  es.addEventListener("busy", () => finish("the queue is full (4 people), try again in a few seconds", true));
+  es.addEventListener("busy", () => finish("the queue is full (2 people), try again in a few seconds", true));
   es.onerror = () => { if (es) finish(n ? "connection closed" : "could not reach the board", !n); };
 });
 stop.addEventListener("click", () => finish("stopped"));

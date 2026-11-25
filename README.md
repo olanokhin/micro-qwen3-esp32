@@ -1,6 +1,6 @@
 # micro-qwen3 on ESP32-S3
 
-A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **74 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
+A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **72 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
 
 The model follows the Qwen3 architecture block by block and is trained from scratch on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories). Its weights take **0.68 MB** (676,934 bytes) in a 4-bit format designed for the chip. Inference is a single dependency-free C file, and the same file runs on a computer for testing.
 
@@ -25,11 +25,11 @@ You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8).
 
 **From the browser.** Open [tensorlupa.com/flash](https://tensorlupa.com/flash) in Chrome or Edge on a computer, plug the board in and press one button. The page walks you through every step.
 
-**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.2.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
+**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.2.1.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
 
 ```bash
 pip install esptool
-esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.2.bin
+esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.2.1.bin
 ```
 
 **From source,** with ESP-IDF 5.3:
@@ -42,7 +42,7 @@ idf.py -p PORT flash
 esptool.py --port PORT --chip esp32s3 --after no_reset write_flash 0x210000 ../models/tsim900-sft-x-w4r.bin
 ```
 
-**Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story token by token and shows the speed. Type up to three words, or tap one of the seven tested orders. You can set the temperature, top-k, the length and the seed: the same seed writes the same story again, and the page shows the seed of every story. Up to four guests can queue at once.
+**Using it.** The board starts its own Wi-Fi network **micro-qwen3** (password `microqwen`). Join it and open http://192.168.4.1. The network name and password are `AP_SSID` and `AP_PASS` at the top of `firmware/main/main.c`. The page prints the story as it is written, in small batches every 50 ms, and shows the speed. Type up to three words, or tap one of the seven tested orders. You can set the temperature, top-k, the length and the seed: the same seed writes the same story again, and the page shows the seed of every story. Two devices can join at once: one story is written while the next one waits.
 
 The serial console works too: type the start of a story, or `/words cat moon cake` to order one; `/seed 33` before it fixes the seed of the next story.
 
@@ -264,7 +264,7 @@ The demo model uses this recipe directly: instruction tuning runs with QAT and t
 | + W4R weights: two int4 per byte, one scale per row, unpacked in registers | 76.0 |
 | + own exponent and rounding instead of the C library, each input quantized once (v1.2) | 85 |
 
-These are decode benchmarks on short generations, 64 to 128 tokens on one core. Attention cost grows with the text, so a full story is slower: 72.7 to 77.3 tokens per second on 30 random orders, 74.1 on average (v1.1: 62 to 64). Splitting the matrix work across both cores reached 80.7 tokens per second, but the firmware keeps core 0 for Wi-Fi and the web server.
+These are decode benchmarks on short generations, 64 to 128 tokens on one core. Attention cost grows with the text, so a full story is slower: 74.0 to 78.4 tokens per second on 30 random orders over the console, 75.2 on average (v1.1: 62 to 64). Through the web page it is 72 to 73: the board sends the story in batches every 50 ms, because every Wi-Fi packet wakes core 0, and core 0 shares the memory bus with the model (one packet per token gave 67). Splitting the matrix work across both cores reached 80.7 tokens per second, but the firmware keeps core 0 for Wi-Fi and the web server.
 
 The numbers for v1.2 include min-p and the spelling rules. Profile of a token on the board: output layer 33%, MLP 24%, attention 17%, q/k/v 12%, o 6%, the rest 7%. The output layer waits for memory: a row from internal SRAM is 2.1 times faster than one from PSRAM. A shortlist of the output layer over the top bits of the weights kept every one of 200 stories but did not pay on this chip; the details are in [How micro-qwen3 was made](https://tensorlupa.com/docs/model/how-it-was-made/).
 

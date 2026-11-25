@@ -210,7 +210,8 @@ static int sse_send(httpd_req_t *req, const uint8_t *b, int len, int ntok) {
 }
 
 // ---- request queue "like Gradio": tickets in order, the client gets its position while it waits
-#define MAX_WAITING 4
+#define MAX_WAITING 2
+#define SEND_MS 50        // tokens are sent to the page in batches, one event every 50 ms
 static SemaphoreHandle_t q_mutex;
 static uint32_t next_ticket, now_serving;
 static int waiting;
@@ -240,15 +241,30 @@ static void web_job_task(void *arg) {
         xSemaphoreTake(model_lock, portMAX_DELAY);
         printf("[web] ticket %lu: \"%s\" t=%.2f k=%d n=%d\n", (unsigned long)j->ticket, j->prompt, j->temp, j->topk, j->steps);
         submit(j->prompt, j->words, j->wbase, j->wtau, j->steps, j->temp, j->topk, j->seed, 0);
-        // each token is its own event, sent as soon as it is ready: generation on core 1 does not wait for the network,
-        // so sending in small pieces does not slow the model and the text flows smoothly
+        // tokens go out in batches, one event every SEND_MS: every packet and its TCP acknowledgement wake the Wi-Fi code
+        // on core 0, which shares the memory bus with the model on core 1 (one event per token: 67 tok/s on the page
+        // against 74 on the console). At ~75 tok/s a batch is 3-4 tokens, and the text still flows smoothly.
         int one = 1;
-        setsockopt(httpd_req_to_sockfd(req), IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);   // do not merge small packets
-        uint8_t tokb[64];
+        setsockopt(httpd_req_to_sockfd(req), IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);   // each batch goes out at once
+        uint8_t tokb[64], acc[512];
+        int acc_len = 0, acc_tok = 0;
+        int64_t last = esp_timer_get_time();
         for (;;) {
-            size_t got = xMessageBufferReceive(tok_mb, tokb, sizeof tokb, pdMS_TO_TICKS(40));
-            if (got && alive && !sse_send(req, tokb, got, 1)) { alive = 0; gen_cancel = 1; }   // "Stop"
-            if (gen_done && xMessageBufferIsEmpty(tok_mb)) break;
+            size_t got = xMessageBufferReceive(tok_mb, tokb, sizeof tokb, pdMS_TO_TICKS(SEND_MS));
+            if (got) {
+                if (acc_len + (int)got > (int)sizeof acc) {          // a long batch: flush first
+                    if (alive && !sse_send(req, acc, acc_len, acc_tok)) { alive = 0; gen_cancel = 1; }
+                    acc_len = acc_tok = 0;
+                }
+                memcpy(acc + acc_len, tokb, got); acc_len += got; acc_tok++;
+            }
+            int finished = gen_done && xMessageBufferIsEmpty(tok_mb);
+            int64_t now = esp_timer_get_time();
+            if (acc_tok && (finished || now - last >= SEND_MS * 1000)) {
+                if (alive && !sse_send(req, acc, acc_len, acc_tok)) { alive = 0; gen_cancel = 1; }   // "Stop"
+                acc_len = acc_tok = 0; last = now;
+            }
+            if (finished) break;
         }
         st = gen_last;
         xSemaphoreGive(model_lock);
@@ -266,7 +282,12 @@ static void web_job_task(void *arg) {
         httpd_resp_sendstr_chunk(req, done);
         httpd_resp_send_chunk(req, NULL, 0);
     }
+    // close the connection after the story: the page opens a new stream for every story, and a kept-alive socket
+    // was reused for the next request and reset after a few tokens (the second Generate hung until Stop)
+    httpd_handle_t hd = req->handle;
+    int fd = httpd_req_to_sockfd(req);
     httpd_req_async_handler_complete(req);
+    httpd_sess_trigger_close(hd, fd);
     free(j);
     vTaskDeleteWithCaps(NULL);
 }
@@ -294,6 +315,7 @@ static esp_err_t h_generate(httpd_req_t *req) {
     if (j->steps > 240) j->steps = 240;
     httpd_resp_set_type(req, "text/event-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Connection", "close");   // one connection per story (see web_job_task)
 
     xSemaphoreTake(q_mutex, portMAX_DELAY);
     int full = waiting >= MAX_WAITING;
@@ -320,7 +342,7 @@ static void start_web(void) {
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
     wifi_config_t ap = {.ap = {.ssid = AP_SSID, .ssid_len = sizeof(AP_SSID) - 1, .password = AP_PASS,
-                               .channel = 6, .max_connection = 4, .authmode = WIFI_AUTH_WPA2_PSK}};
+                               .channel = 6, .max_connection = 2, .authmode = WIFI_AUTH_WPA2_PSK}};
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -329,6 +351,7 @@ static void start_web(void) {
     cfg.stack_size = 6144;     // generation runs in its own task on core 1, so the server needs a smaller stack
     cfg.core_id = 0;
     cfg.lru_purge_enable = true;
+    cfg.max_open_sockets = 4;   // up to 2 people: page, info and a story stream each
     httpd_handle_t srv = NULL;
     ESP_ERROR_CHECK(httpd_start(&srv, &cfg));
     httpd_uri_t u1 = {.uri = "/", .method = HTTP_GET, .handler = h_index};
@@ -383,9 +406,9 @@ void app_main(void) {
     if (!psram) { printf("not enough PSRAM (%u KB) for a copy of the model\n", (unsigned)(len / 1024)); return; }
     memcpy(psram, flash_ptr, len);
 
-    heap_report("before Wi-Fi");
-    start_web();   // Wi-Fi and the server start before the model: they need internal SRAM, the KV cache takes the rest
-    heap_report("after Wi-Fi");
+    heap_report("before the model");
+    // the model (and its KV cache) goes first: the cache wants 12 blocks of 16 KB in one piece, and Wi-Fi started
+    // first splits internal SRAM so that only 11 fit; Wi-Fi then takes the rest, in smaller pieces
     int rc = mq_load(&M, psram, len);
     if (rc) {      // not enough internal SRAM for the int8 KV cache: retry with the KV cache in PSRAM
         printf("KV cache did not fit in internal SRAM (%d), using PSRAM\n", rc);
@@ -396,6 +419,8 @@ void app_main(void) {
     printf("model: W%d%s, vocab %d, hidden %d, layers %d; KV cache: %d of %d blocks in internal SRAM\n",
            M.bits, M.rowscale ? "R" : "", M.vocab, M.dim, M.layers, M.kv_blocks_internal, 2 * M.kv_blocks);
     heap_report("after the model");
+    start_web();
+    heap_report("after Wi-Fi");
     pie_selftest();
     mq_parallel = NULL;   // the whole model on one core: no sync between cores
     xTaskCreatePinnedToCore(gen_worker, "mq_gen", 6144, NULL, configMAX_PRIORITIES - 3, NULL, 1);
