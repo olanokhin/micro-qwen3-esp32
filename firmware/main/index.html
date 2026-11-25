@@ -155,10 +155,11 @@ document.querySelectorAll("#starts button").forEach(b => b.addEventListener("cli
 
 // Tried and tested orders: words and a seed. With the same seed the board writes the same story. Each of these was run
 // on a real ESP32-S3 and kept only if all words were used, the story ended by itself, had no repeated phrases and no
-// made-up words; then a person read it. The seeds are for the chip: a computer running the same code rounds a few
-// steps differently and may write another story for the same seed.
-const PICKS = [["dragon, cookie, school", 33], ["share, toy, kind", 61], ["find, treasure, brave", 40], ["run, dog, fast", 3],
-               ["fly, kite, red", 524], ["play, ball, happy", 246], ["robot, moon", 135]];
+// made-up words; then a person read it. Since v1.2 a computer running host/order writes the same story for the same
+// seed as the chip (own exp, no fused multiply-add on either side), so the seeds were found on a computer and
+// checked on the chip.
+const PICKS = [["dragon, cookie, school", 91], ["share, toy, kind", 175], ["find, treasure, brave", 507], ["run, dog, fast", 413],
+               ["fly, kite, red", 50], ["play, ball, happy", 280], ["robot, moon", 245]];
 PICKS.forEach(([words, seed]) => {
   const b = document.createElement("button"); b.type = "button"; b.textContent = words;
   b.addEventListener("click", () => { $("words").value = words; $("seed").value = seed; markPick(); $("f").requestSubmit(); });

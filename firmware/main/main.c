@@ -128,7 +128,13 @@ static int to_buffer(void *ctx, const uint8_t *b, int len) {
 
 static int to_console(void *ctx, const uint8_t *b, int len) { fwrite(b, 1, len, stdout); fflush(stdout); gen_tokens++; return 1; }
 
+#ifdef MQ_PROFILE
+static uint64_t prof_now(void) { return (uint64_t)esp_timer_get_time(); }
+#endif
 static void gen_worker(void *arg) {
+#ifdef MQ_PROFILE
+    mq_now_us = prof_now;
+#endif
     GenJob job;
     for (;;) {
         xQueueReceive(job_q, &job, portMAX_DELAY);
@@ -414,6 +420,15 @@ void app_main(void) {
         static char chat[640];
         const char *prompt = line, *words = NULL;
         static uint32_t next_seed;
+#ifdef MQ_PROFILE
+        // "/prof": time per token by part of the model since the last /prof (profiling builds only)
+        if (!strncmp(line, "/prof", 5)) {
+            static const char *nm[MQP_N] = {"qkv", "attn", "o", "mlp", "head", "other"};
+            uint64_t tot = 0; for (int k = 0; k < MQP_N; k++) tot += mq_prof_us[k];
+            for (int k = 0; k < MQP_N; k++) printf("%-6s %8llu us %5.1f%%\n", nm[k], (unsigned long long)mq_prof_us[k], tot ? 100.0 * mq_prof_us[k] / tot : 0.0);
+            memset(mq_prof_us, 0, sizeof mq_prof_us); printf("> "); fflush(stdout); continue;
+        }
+#endif
         if (!strncmp(line, "/seed ", 6)) { next_seed = (uint32_t)strtoul(line + 6, NULL, 10); printf("seed %lu for the next story\n> ", (unsigned long)next_seed); fflush(stdout); continue; }
         if (!strncmp(line, "/words ", 7)) {
             words = line + 7;

@@ -1,6 +1,6 @@
 # micro-qwen3 on ESP32-S3
 
-A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **60 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
+A language model with **1,056,656 parameters** that writes short stories on an ESP32-S3 microcontroller, offline, at about **74 tokens per second**. Name up to three words, for example *dragon, cookie, school*, and the board writes a story that uses all of them.
 
 The model follows the Qwen3 architecture block by block and is trained from scratch on [TinyStories](https://huggingface.co/datasets/roneneldan/TinyStories). Its weights take **0.68 MB** (676,934 bytes) in a 4-bit format designed for the chip. Inference is a single dependency-free C file, and the same file runs on a computer for testing.
 
@@ -25,11 +25,11 @@ You need an ESP32-S3 module with 16 MB flash and 8 MB PSRAM (N16R8).
 
 **From the browser.** Open [tensorlupa.com/flash](https://tensorlupa.com/flash) in Chrome or Edge on a computer, plug the board in and press one button. The page walks you through every step.
 
-**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.1.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
+**From a terminal, without ESP-IDF.** Download `micro-qwen3-esp32s3-v1.2.bin` from the [latest release](../../releases/latest): it holds the bootloader, the partition table, the firmware and the model in one file.
 
 ```bash
 pip install esptool
-esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.1.bin
+esptool.py --chip esp32s3 --port PORT write_flash 0x0 micro-qwen3-esp32s3-v1.2.bin
 ```
 
 **From source,** with ESP-IDF 5.3:
@@ -63,7 +63,7 @@ make -C host order
 ./host/order models/tsim900-sft-x-w4r.bin "dragon, cookie, school" 1..200    # one line per seed
 ```
 
-A seed found on a computer is only a candidate for the board. The integer core is the same, but the chip and a computer round a few float steps differently: of 7 seeds we compared, 3 stories matched letter for letter and 4 went another way after 100 to 480 characters. The seven orders on the board's page were chosen and read on a real ESP32-S3, and each repeats exactly from run to run.
+Since v1.2 a seed found on a computer writes the same story on the board, letter for letter: 30 of 30 random orders matched. In v1.1 only 3 of 7 did, because the chip and a computer computed the exponent with different C library code and the chip's compiler fused multiplications with additions. Now the engine has its own exponent made of plain + and ×, and both builds use `-ffp-contract=off`. The seven orders on the board's page were found with `host/order` on a computer, read, and checked on a real ESP32-S3.
 
 ## Parity check
 
@@ -262,10 +262,11 @@ The demo model uses this recipe directly: instruction tuning runs with QAT and t
 | + PIE vector instructions (16 int8 multiplies per instruction) | 43.8 |
 | + int8 KV cache in internal SRAM, attention also on PIE | 54.0 |
 | + W4R weights: two int4 per byte, one scale per row, unpacked in registers | 76.0 |
+| + own exponent and rounding instead of the C library, each input quantized once (v1.2) | 85 |
 
-These are decode benchmarks on short generations, 64 to 128 tokens on one core. Attention cost grows with the text, so a full story of 150 to 220 tokens averages about 60 tokens per second. Splitting the matrix work across both cores reached 80.7 tokens per second, but the firmware keeps core 0 for Wi-Fi and the web server.
+These are decode benchmarks on short generations, 64 to 128 tokens on one core. Attention cost grows with the text, so a full story is slower: 72.7 to 77.3 tokens per second on 30 random orders, 74.1 on average (v1.1: 62 to 64). Splitting the matrix work across both cores reached 80.7 tokens per second, but the firmware keeps core 0 for Wi-Fi and the web server.
 
-The current firmware, with min-p and the spelling rules, measures 74 tokens per second in the same benchmark and 58 to 61 on full stories with requested words.
+The numbers for v1.2 include min-p and the spelling rules. Profile of a token on the board: output layer 33%, MLP 24%, attention 17%, q/k/v 12%, o 6%, the rest 7%. The output layer waits for memory: a row from internal SRAM is 2.1 times faster than one from PSRAM. A shortlist of the output layer over the top bits of the weights kept every one of 200 stories but did not pay on this chip; the details are in [How micro-qwen3 was made](https://tensorlupa.com/docs/model/how-it-was-made/).
 
 Grouped int4 and the Hadamard rotation were also tried, see [How the 4-bit weights were made](#how-the-4-bit-weights-were-made).
 

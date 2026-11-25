@@ -167,3 +167,6 @@ extern uint64_t (*mq_now_us)(void);
 // less likely); top-p keeps the most likely ones until their sum reaches mq_top_p (1 = off).
 extern float mq_min_p, mq_top_p;
 int mq_sample(const MQModel *m, float temperature, int top_k, uint64_t *rng);
+// exp used everywhere in the engine: a polynomial of plain + and ×, so the board, a computer and WebAssembly give the
+// same bits (compile without fused multiply-add). Max relative error 7e-6 on [-87, 10].
+float mq_expf(float x);

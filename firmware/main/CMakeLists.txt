@@ -6,5 +6,5 @@ idf_component_register(SRCS "main.c" "../microqwen.c"
                        EMBED_TXTFILES "index.html"
                        PRIV_REQUIRES esp_partition esp_timer driver esp_driver_usb_serial_jtag vfs spi_flash heap
                                      esp_wifi esp_http_server esp_netif esp_event nvs_flash)
-target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wno-unused-function)
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wno-unused-function -ffp-contract=off)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE MQ_ESP32=1 MQ_PIE=1)

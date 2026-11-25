@@ -286,27 +286,44 @@ static void rows_q4(float *y, const MQMat *W, const int8_t *xq, float sx, int r0
     }
 }
 
+// Own exp and round instead of libm: the same + and × on the board, the Mac and in WebAssembly, so the three give the
+// same bits (libm expf differs between them), and cheaper than libm on the ESP32-S3.
+// exp(x) = 2^n · 2^f, n = floor(x·log2 e), 2^f by a degree-5 polynomial on [0, 1); max relative error 7e-6 on [-87, 10].
+static inline float mq_exp(float x) {
+    if (x < -87.0f) return 0.0f;
+    if (x > 88.0f) x = 88.0f;
+    float t = x * 1.44269504f;
+    int n = (int)t;
+    if (t < (float)n) n--;
+    float f = t - (float)n;
+    float p = 1.8775767e-3f;
+    p = p * f + 8.9893397e-3f;
+    p = p * f + 5.5826318e-2f;
+    p = p * f + 2.4015361e-1f;
+    p = p * f + 6.9315308e-1f;
+    p = p * f + 9.9999994e-1f;
+    union { float f; uint32_t u; } two_n = { .u = (uint32_t)(n + 127) << 23 };
+    return p * two_n.f;
+}
+float mq_expf(float x) { return mq_exp(x); }   // the same exp for code outside this file (the studio's probabilities)
+// Round half away from zero, as roundf, for |t| <= 127.5 (the int8 range).
+static inline int mq_round(float t) { return (int)(t >= 0.0f ? t + 0.5f : t - 0.5f); }
+
 // Symmetric int8 quantization of a vector by max|x|; returns the scale.
 static float quant_s8(int8_t *q, const float *x, int n) {
     float amax = 0;
     for (int i = 0; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
     float s = amax / 127.0f + 1e-12f, inv = 1.0f / s;
     for (int i = 0; i < n; i++) {
-        float t = roundf(x[i] * inv);
+        int t = mq_round(x[i] * inv);
         q[i] = (int8_t)(t > 127 ? 127 : t < -127 ? -127 : t);
     }
     return s;
 }
 
-// y = W x in W8A8: x is quantized to int8 (symmetric, by max|x|), int32 accumulation, then scales.
-static void matmul_q8(float *y, const MQMat *W, const float *x, int8_t *xq) {
-    float amax = 0;
-    for (int i = 0; i < W->in; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
-    float sx = amax / 127.0f + 1e-12f, inv = 1.0f / sx;
-    for (int i = 0; i < W->in; i++) {
-        float t = roundf(x[i] * inv);
-        xq[i] = (int8_t)(t > 127 ? 127 : t < -127 ? -127 : t);
-    }
+// y = W x in W8A8 for an input already quantized to int8 (xq, scale sx); int32 accumulation, then scales.
+// q/k/v and gate/up read the same vector: it is quantized once (quant_s8) and multiplied several times.
+static void matmul_xq(float *y, const MQMat *W, int8_t *xq, float sx) {
     MQRowsFn fn = rows_q8;
     if (W->bits == 4 && W->rowscale) {
         int padded = W->groups * 32;
@@ -330,6 +347,13 @@ static void matmul_q8(float *y, const MQMat *W, const float *x, int8_t *xq) {
     else fn(y, W, xq, sx, 0, W->out);
 }
 
+// y = W x in W8A8: x is quantized to int8 (symmetric, by max|x|), then multiplied.
+static float quant_s8(int8_t *q, const float *x, int n);
+static void matmul_q8(float *y, const MQMat *W, const float *x, int8_t *xq) {
+    float sx = quant_s8(xq, x, W->in);
+    matmul_xq(y, W, xq, sx);
+}
+
 static void rope(float *v, int nheads, int hd, const float *cs, const float *sn) {
     int half = hd / 2;   // "rotate half": pairs (i, i + hd/2), as mx.fast.rope(traditional=False)
     for (int h = 0; h < nheads; h++) {
@@ -342,7 +366,7 @@ static void rope(float *v, int nheads, int hd, const float *cs, const float *sn)
     }
 }
 
-static float silu(float x) { return x / (1.0f + expf(-x)); }
+static float silu(float x) { return x / (1.0f + mq_exp(-x)); }
 
 #ifdef MQ_TRACE
 MQTrace *mq_trace = NULL;
@@ -367,7 +391,7 @@ static __attribute__((noinline)) void attend_head_q8(float *out, const float *qh
         if (s > mx) mx = s;
     }
     float sum = 0;
-    for (int t = 0; t <= pos; t++) { scores[t] = expf(scores[t] - mx); sum += scores[t]; }
+    for (int t = 0; t <= pos; t++) { scores[t] = mq_exp(scores[t] - mx); sum += scores[t]; }
     float inv = 1.0f / sum;
 #ifdef MQ_TRACE
     if (g_tr_p) for (int t = 0; t <= pos; t++) g_tr_p[t] = scores[t] * inv;
@@ -393,7 +417,7 @@ static __attribute__((noinline)) void attend_head(float *out, const float *qh, c
         if (s > mx) mx = s;
     }
     float sum = 0;
-    for (int t = 0; t <= pos; t++) { scores[t] = expf(scores[t] - mx); sum += scores[t]; }
+    for (int t = 0; t <= pos; t++) { scores[t] = mq_exp(scores[t] - mx); sum += scores[t]; }
     float inv = 1.0f / sum;
 #ifdef MQ_TRACE
     if (g_tr_p) for (int t = 0; t <= pos; t++) g_tr_p[t] = scores[t] * inv;
@@ -438,9 +462,10 @@ float *mq_forward(MQModel *m, int token, int pos) {
         // --- attention (GQA + QK-norm + RoPE)
         rmsnorm(m->xn, m->x, L->in_norm, d, m->eps);
         PROF_ADD(MQP_OTHER, t);
-        matmul_q8(m->q, &L->q, m->xn, m->xq);
-        matmul_q8(m->k, &L->k, m->xn, m->xq);
-        matmul_q8(m->v, &L->v, m->xn, m->xq);
+        float sx = quant_s8(m->xq, m->xn, m->dim);
+        matmul_xq(m->q, &L->q, m->xq, sx);
+        matmul_xq(m->k, &L->k, m->xq, sx);
+        matmul_xq(m->v, &L->v, m->xq, sx);
         PROF_ADD(MQP_QKV, t);
         TR_COPY(mq_trace->v_out + (size_t)l * kvd, m->v, kvd);
         for (int h = 0; h < m->heads; h++) rmsnorm(m->q + h * hd, m->q + h * hd, L->q_norm, hd, m->eps);
@@ -486,8 +511,9 @@ float *mq_forward(MQModel *m, int token, int pos) {
         // --- MLP (SwiGLU)
         rmsnorm(m->xn, m->x, L->post_norm, d, m->eps);
         PROF_ADD(MQP_OTHER, t);
-        matmul_q8(m->hb, &L->gate, m->xn, m->xq);
-        matmul_q8(m->hb2, &L->up, m->xn, m->xq);
+        sx = quant_s8(m->xq, m->xn, m->dim);
+        matmul_xq(m->hb, &L->gate, m->xq, sx);
+        matmul_xq(m->hb2, &L->up, m->xq, sx);
         PROF_ADD(MQP_MLP, t);
         for (int i = 0; i < m->inter; i++) m->hb[i] = silu(m->hb[i]) * m->hb2[i];
         TR_COPY(mq_trace->mlp_act + (size_t)l * m->inter, m->hb, m->inter);
@@ -557,7 +583,7 @@ int mq_sample(const MQModel *m, float temperature, int top_k, uint64_t *rng) {
         }
     }
     float sum = 0, p[64];
-    for (int j = 0; j < n; j++) { p[j] = expf((val[j] - val[0]) / temperature); sum += p[j]; }
+    for (int j = 0; j < n; j++) { p[j] = mq_exp((val[j] - val[0]) / temperature); sum += p[j]; }
     if (mq_min_p > 0 || mq_top_p < 1) {            // p[0] = 1 is the best candidate; val is sorted descending
         int keep = n; float acc = 0;
         for (int j = 0; j < n; j++) {
