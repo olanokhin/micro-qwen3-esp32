@@ -187,6 +187,8 @@ A run on a T4, next to the runs behind the published weights:
 
 The tokenizer trained in Colab is the same file, byte for byte, as `models/tsim900-sft-x.tokenizer.json`. The weights are not: the two frameworks draw different random numbers, so this is the same recipe and the same quality, not the same model. The whole notebook, from an empty runtime to the story from the C engine, ran in 35 minutes: downloading and tokenizing the data takes about as long as the training itself.
 
+At the end it packs the files you ask for (`EXPORT`): full-precision weights of both stages, an 8-bit `.bin` and a 4-bit `.bin`. The 8-bit file opens in the [TensorLupa](https://tensorlupa.com/studio) studio (model menu, Load from computer), the 4-bit one opens there too and runs on the board. Not going to use a board? Set `QAT = False` and skip the 4-bit file.
+
 Every setting is in plain view: the amount of data, the model shape, the learning rates. Keep them to get a model like the published one, or change them and compare. `QUICK = True` in the first code cell runs the whole chain on a small slice in a few minutes. The notebook is built from `training/colab/train_micro_qwen3.py`, which also runs as a plain script.
 
 ### Stories with requested words

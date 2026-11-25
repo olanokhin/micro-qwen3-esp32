@@ -9,7 +9,8 @@
 # 2. **Base model.** From scratch on 500 MB of stories.
 # 3. **Instruction tuning.** 900K "write a story with these words" dialogues, with
 #    quantization-aware training, so the model learns with the 4-bit weights it will have on the chip.
-# 4. **Export.** One `.bin` file in the W4R format, the one the C engine and the board read.
+# 4. **Export.** Full-precision weights, an 8-bit file for the TensorLupa studio and a 4-bit file
+#    for the ESP32-S3 board. Take only what you need.
 # 5. **Run.** The C engine is built here and writes a story from the file you just trained.
 #
 # **How to run:** Runtime > Change runtime type > T4 GPU, then Runtime > Run all.
@@ -21,6 +22,27 @@
 #
 # `QUICK = True` runs the whole chain on a small slice of the data in a few minutes.
 # The stories will be poor, but every step runs, which is a good first check.
+#
+# `QAT` and `EXPORT` decide what you get at the end:
+#
+# | File | What it is | Where it runs |
+# |---|---|---|
+# | `float32` | full-precision weights of both stages, Hugging Face names, with `config.json` and `tokenizer.json` | PyTorch, MLX, your own code |
+# | `int8` | `micro-qwen3-8bit.bin`: one scale per row, as precise as the original | the TensorLupa studio (default mode), the C engine |
+# | `int4` | `micro-qwen3-4bit.bin`: W4R, 4 bits with a searched scale per row | the ESP32-S3 board, the studio's 4-bit mode |
+#
+# `QAT = True` (the published recipe) trains the second stage with the weights rounded to 4 bits in the
+# forward pass. The training still keeps float32 weights and the 8-bit file is made from them, but they are
+# tuned for the 4-bit forward pass. Two runs of this notebook on a T4, bits per byte on held-out answers
+# (lower is better):
+#
+# | | full and 8-bit weights | 4-bit weights |
+# |---|---|---|
+# | `QAT = True` | 0.706 | **0.721** |
+# | `QAT = False` | **0.682** | 0.729 |
+#
+# So QAT buys a slightly better 4-bit file and costs about 3% on the full and 8-bit weights.
+# Not going to use a board? Set `QAT = False` and `EXPORT = ["float32", "int8"]`.
 
 # %%
 import os
@@ -34,6 +56,9 @@ SFT_BYTES = 5e6 if QUICK else 6e8             # how much text the instruction tu
 VAL_DOCS = 500 if QUICK else 2_000            # held out, never trained on
 SEQ_LEN, BATCH = 256, 64
 SEED = 0
+
+QAT = True                             # instruction tuning with 4-bit weights in the forward pass
+EXPORT = ["float32", "int8", "int4"]   # which files to make: any of "float32", "int8", "int4"
 
 # %%
 import codecs, json, math, re, struct, subprocess, time, urllib.request
@@ -471,7 +496,7 @@ prompt = "Once upon a time, there was a little dog named"
 print(prompt + sample(model, tok, prompt))
 
 # %% [markdown]
-# ## 5. Instruction tuning with 4-bit weights
+# ## 5. Instruction tuning
 #
 # The base model continues a text. To make it write a story to order, we go on training it on
 # [TinyStoriesInstruct](https://huggingface.co/datasets/roneneldan/TinyStoriesInstruct): each record
@@ -484,7 +509,8 @@ print(prompt + sample(model, tok, prompt))
 # Once upon a time ...<|im_end|>
 # ```
 #
-# and the loss counts only the answer. The same tokenizer is used. QAT is on from the first step.
+# and the loss counts only the answer. The same tokenizer is used. With `QAT = True`, the weights
+# are rounded to 4 bits in the forward pass from the first step.
 
 # %%
 FIELD_RE = re.compile(r"^(Features|Words|Summary|Random sentence|Story):[ \t]*", re.M)
@@ -570,11 +596,12 @@ print(json.dumps(sft_meta, indent=2))
 
 # %%
 SFT_RUN = WORK / "run-instruct"
-sft_log = train(model, SFT_DATA, SFT_RUN, train_bytes=SFT_BYTES, lr=1e-3, warmup=100, qat=True, eval_every=1000)
+sft_log = train(model, SFT_DATA, SFT_RUN, train_bytes=SFT_BYTES, lr=1e-3, warmup=100, qat=QAT, eval_every=1000)
 
 # %% [markdown]
 # What the 4 bits cost: the same held-out dialogues with float32 weights and with the weights
-# rounded the way the export will round them.
+# rounded the way the 4-bit export will round them. With QAT the gap is about 0.015 bits per byte,
+# without it about 0.047 (from better full weights, so the 4-bit result is only a little worse).
 
 # %%
 sft_val = TokenStream(SFT_DATA / "val.bin", SEQ_LEN, SEED + 1).fixed_batches(40, BATCH)
@@ -584,15 +611,16 @@ print(f"float32 weights: {bpb_fp:.3f} bpb | 4-bit weights: {bpb_q4:.3f} bpb | co
 
 # %%
 order = "<|im_start|>user\nWrite a short story. Use the words: dragon, cookie, school.<|im_end|>\n" + ASSISTANT
-Matrix.quant = fake_int4          # sample with the 4-bit weights
+Matrix.quant = fake_int4 if QAT else None    # with QAT, sample with the 4-bit weights
 print(sample(model, tok, order))
 Matrix.quant = None
 
 # %% [markdown]
-# ## 6. Export to W4R and run in the C engine
+# ## 6. Export
 #
-# One file holds everything the board needs: the header with the model shape, every matrix as
-# 4-bit integers (two per byte) with a float32 scale per row, the norms, and the tokenizer.
+# The float32 weights are copied as they are. The `.bin` files are what the C engine reads, in the
+# studio (compiled to WebAssembly) and on the board. One file holds everything: the header with the model
+# shape, every matrix as 8-bit or 4-bit integers with a float32 scale per row, the norms, and the tokenizer.
 
 # %%
 def bytes_to_unicode():
@@ -604,6 +632,13 @@ def bytes_to_unicode():
             cs.append(256 + n)
             n += 1
     return dict(zip(bs, map(chr, cs)))
+
+
+def q8_rows(w):
+    """int8 with one scale per row: q in [-127, 127]; the matrix, then the float32 scales."""
+    s = (np.abs(w).max(axis=1) / 127.0 + 1e-12).astype(np.float32)
+    q = np.clip(np.round(w / s[:, None]), -127, 127).astype(np.int8)
+    return q.tobytes() + s.tobytes()
 
 
 def q4_rows(w):
@@ -630,16 +665,18 @@ def q4_rows(w):
     return packed.tobytes() + sb + b"\0" * ((-len(sb)) % 16)
 
 
-def export_w4r(run, out_path):
+def export_bin(run, out_path, bits):
+    """bits=8: format version 1 (int8 per row); bits=4: version 3 (W4R)."""
     run = Path(run)
     known = ModelConfig.__dataclass_fields__
     cfg = ModelConfig(**{k: v for k, v in json.loads((run / "config.json").read_text()).items() if k in known})
     sd = {k: v.float().numpy() for k, v in load_file(str(run / "model.safetensors")).items()}
     out = bytearray(b"MQW3")
-    out += struct.pack("<9I2f", 3, cfg.vocab_size, cfg.hidden_size, cfg.intermediate_size, cfg.num_hidden_layers,
+    put = q8_rows if bits == 8 else q4_rows
+    out += struct.pack("<9I2f", 1 if bits == 8 else 3, cfg.vocab_size, cfg.hidden_size, cfg.intermediate_size, cfg.num_hidden_layers,
                        cfg.num_attention_heads, cfg.num_key_value_heads, cfg.head_dim,
                        cfg.max_position_embeddings, cfg.rope_theta, cfg.rms_norm_eps)
-    out += q4_rows(sd["model.embed_tokens.weight"])
+    out += put(sd["model.embed_tokens.weight"])
     out += sd["model.norm.weight"].tobytes()
     for i in range(cfg.num_hidden_layers):
         p = f"model.layers.{i}."
@@ -647,7 +684,7 @@ def export_w4r(run, out_path):
             out += sd[p + n + ".weight"].tobytes()
         for n in ("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
                   "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"):
-            out += q4_rows(sd[p + n + ".weight"])
+            out += put(sd[p + n + ".weight"])
     n_weights = len(out)
     # tokenizer: the raw bytes of every token, then the BPE merges in rank order
     tj = json.loads((run / "tokenizer.json").read_text())
@@ -668,31 +705,56 @@ def export_w4r(run, out_path):
     print(f"{out_path}: {len(out) / 1e6:.2f} MB (weights {n_weights / 1e6:.2f} MB)")
 
 
-BIN = WORK / "micro-qwen3-w4r.bin"
-export_w4r(SFT_RUN, BIN)
+EXPORT_DIR = WORK / "export"
+EXPORT_DIR.mkdir(exist_ok=True)
+made = []
+if "float32" in EXPORT:
+    for stage, run in (("base", BASE_RUN), ("instruct", SFT_RUN)):
+        dst = EXPORT_DIR / f"float32-{stage}"
+        dst.mkdir(exist_ok=True)
+        for name in ("model.safetensors", "config.json", "tokenizer.json"):
+            (dst / name).write_bytes((run / name).read_bytes())
+        made.append(dst)
+        print(f"{dst}: {(dst / 'model.safetensors').stat().st_size / 1e6:.2f} MB of weights")
+if "int8" in EXPORT:
+    made.append(EXPORT_DIR / "micro-qwen3-8bit.bin")
+    export_bin(SFT_RUN, made[-1], 8)
+if "int4" in EXPORT:
+    if not QAT:
+        print("int4 without QAT: the file works; in our runs it was about 1% worse than with QAT")
+    made.append(EXPORT_DIR / "micro-qwen3-4bit.bin")
+    export_bin(SFT_RUN, made[-1], 4)
+BIN = next((m for m in made if m.suffix == ".bin"), None)    # the file the C engine runs below
 
 # %% [markdown]
 # The same C code that runs on the ESP32-S3, built for this machine. `order` writes a story with
 # the board's decoding loop: the bonus for requested words, the spelling automaton, the repetition penalty.
-# Arguments: the model file, the words, the seed.
+# Arguments: the model file, the words, the seed. It runs the 4-bit file if there is one, otherwise the 8-bit one.
 
 # %%
 REPO = Path(os.environ.get("MQ_REPO", "micro-qwen3-esp32"))
-if not REPO.exists():
-    subprocess.run(["git", "clone", "--depth", "1", "https://github.com/olanokhin/micro-qwen3-esp32", str(REPO)], check=True)
-subprocess.run(["make", "-C", str(REPO / "host"), "order"], check=True)
-print(subprocess.run([str(REPO / "host" / "order"), str(BIN), "dragon, cookie, school", "33"],
-                     capture_output=True, text=True, check=True).stdout)
+if BIN is None:
+    print("no .bin in EXPORT: nothing for the C engine to run")
+else:
+    BIN = next((m for m in made if m.name.endswith("4bit.bin")), BIN)
+    if not REPO.exists():
+        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/olanokhin/micro-qwen3-esp32", str(REPO)], check=True)
+    subprocess.run(["make", "-C", str(REPO / "host"), "order"], check=True)
+    print(subprocess.run([str(REPO / "host" / "order"), str(BIN), "dragon, cookie, school", "33"],
+                         capture_output=True, text=True, check=True).stdout)
 
 # %% [markdown]
 # ## Take the model with you
 #
-# `micro-qwen3-w4r.bin` is the file the firmware reads from its model partition.
-# The repository README shows how to flash it to a board.
+# Everything from `EXPORT` goes into one zip archive. `micro-qwen3-4bit.bin` is the file the firmware
+# reads from its model partition; the repository README shows how to flash it to a board.
 
 # %%
+import shutil
+ZIP = Path(shutil.make_archive(str(WORK / "micro-qwen3-export"), "zip", EXPORT_DIR))
+print(f"{ZIP}: {ZIP.stat().st_size / 1e6:.1f} MB")
 try:
     from google.colab import files
-    files.download(str(BIN))
+    files.download(str(ZIP))
 except ImportError:
-    print("the model is at", BIN.resolve())
+    print("the files are in", EXPORT_DIR.resolve())
